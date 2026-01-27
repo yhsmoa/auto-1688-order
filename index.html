@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1688 자동 주문 시스템</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1235px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      text-align: center;
+      color: #333;
+      margin-bottom: 20px;
+    }
+
+    .input-section {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+
+    .input-section h3 {
+      margin-bottom: 10px;
+      color: #555;
+    }
+
+    .input-section p {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 10px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 150px;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 13px;
+      resize: vertical;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: #4a90d9;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 15px;
+      justify-content: space-between;
+    }
+
+    .button-row-left {
+      display: flex;
+      gap: 10px;
+    }
+
+    .button-row-right {
+      display: flex;
+      gap: 10px;
+    }
+
+    button {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .btn-save {
+      background: #4a90d9;
+      color: white;
+    }
+
+    .btn-save:hover:not(:disabled) {
+      background: #3a7bc8;
+    }
+
+    .btn-save:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .btn-skip {
+      background: #f0ad4e;
+      color: white;
+    }
+
+    .btn-skip:hover:not(:disabled) {
+      background: #ec971f;
+    }
+
+    .btn-skip:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .btn-start {
+      background: #4a90d9;
+      color: white;
+    }
+
+    .btn-start:hover:not(:disabled) {
+      background: #3a7bc8;
+    }
+
+    .btn-start:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .btn-review {
+      background: #4a90d9;
+      color: white;
+    }
+
+    .btn-review:hover:not(:disabled) {
+      background: #3a7bc8;
+    }
+
+    .btn-review:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .btn-stop {
+      background: #d9534f;
+      color: white;
+      font-weight: bold;
+    }
+
+    .btn-stop:hover {
+      background: #c9302c;
+    }
+
+    .btn-clear {
+      background: #4a90d9;
+      color: white;
+    }
+
+    .btn-clear:hover {
+      background: #3a7bc8;
+    }
+
+    .btn-refcode {
+      background: #4a90d9;
+      color: white;
+    }
+
+    .btn-refcode:hover:not(:disabled) {
+      background: #3a7bc8;
+    }
+
+    .btn-refcode:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .btn-login-setup {
+      background: #4a90d9;
+      color: white;
+    }
+
+    .btn-login-setup:hover {
+      background: #3a7bc8;
+    }
+
+    .order-list {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      overflow: hidden;
+      position: relative;
+    }
+
+
+    .order-list h3 {
+      padding: 15px 20px;
+      background: #f8f8f8;
+      border-bottom: 1px solid #eee;
+      color: #555;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .order-list-header-buttons {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-export {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .btn-export-success {
+      background: #5cb85c;
+      color: white;
+    }
+
+    .btn-export-success:hover {
+      background: #4cae4c;
+    }
+
+    .btn-export-fail {
+      background: #d9534f;
+      color: white;
+    }
+
+    .btn-export-fail:hover {
+      background: #c9302c;
+    }
+
+    .btn-apply-cart {
+      background: #f0ad4e;
+      color: white;
+    }
+
+    .btn-apply-cart:hover {
+      background: #ec971f;
+    }
+
+    /* 테이블 검색 바 */
+    .table-search-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 15px;
+      background: #f8f8f8;
+      border-bottom: 1px solid #eee;
+    }
+
+    .table-search-bar input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .table-search-bar input:focus {
+      border-color: #4a90d9;
+    }
+
+    .table-search-count {
+      font-size: 12px;
+      color: #666;
+      min-width: 80px;
+    }
+
+    .table-search-clear {
+      background: none;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      color: #666;
+    }
+
+    .table-search-clear:hover {
+      background: #eee;
+      color: #333;
+    }
+
+    .order-table tr.search-hidden {
+      display: none;
+    }
+
+    .order-table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid #ddd;
+    }
+
+    .order-table th,
+    .order-table td {
+      padding: 12px 15px;
+      text-align: left;
+      border: 1px solid #ddd;
+      font-size: 13px;
+    }
+
+    .order-table th {
+      background: #fafafa;
+      font-weight: 600;
+      color: #666;
+    }
+
+    .order-table tr:hover {
+      background: #f9f9f9;
+    }
+
+    .order-table .order-no-cell {
+      cursor: pointer;
+      color: #4a90d9;
+    }
+
+    .order-table .order-no-cell:hover {
+      text-decoration: underline;
+    }
+
+    .complete-cell {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .complete-cell:hover {
+      background: #f0f0f0;
+    }
+
+    .reason-cell {
+      cursor: pointer;
+      user-select: none;
+      color: #333;
+    }
+
+    .reason-cell:hover {
+      background: #f0f0f0;
+    }
+
+    .review-cell {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .review-cell:hover {
+      background: #f0f0f0;
+    }
+
+    .editable-cell {
+      cursor: text;
+    }
+
+    .editable-cell:hover {
+      background: #f0f0f0;
+    }
+
+    .order-table input[type="checkbox"] {
+      cursor: pointer;
+    }
+
+    .checkbox-cell {
+      cursor: pointer;
+    }
+
+    /* 모달 스타일 */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+    }
+
+    .modal-content {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      width: 300px;
+      max-width: 90%;
+    }
+
+    .modal-title {
+      font-size: 16px;
+      font-weight: bold;
+      margin-bottom: 15px;
+      color: #333;
+    }
+
+    .modal-buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .modal-btn {
+      padding: 10px 15px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background: white;
+      cursor: pointer;
+      text-align: left;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    .modal-btn:hover {
+      background: #f5f5f5;
+      border-color: #4a90d9;
+    }
+
+    .modal-btn.selected {
+      background: #4a90d9;
+      color: white;
+      border-color: #4a90d9;
+    }
+
+    .modal-input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      margin-top: 8px;
+    }
+
+    .modal-input:disabled {
+      background: #f5f5f5;
+      color: #999;
+    }
+
+    .modal-input:focus {
+      outline: none;
+      border-color: #4a90d9;
+    }
+
+    .modal-btn-clear {
+      padding: 10px 15px;
+      border: 1px solid #d9534f;
+      border-radius: 4px;
+      background: white;
+      color: #d9534f;
+      cursor: pointer;
+      text-align: center;
+      font-size: 14px;
+      font-weight: bold;
+      transition: all 0.2s;
+      width: 100%;
+    }
+
+    .modal-btn-clear:hover {
+      background: #d9534f;
+      color: white;
+    }
+
+    .status-pending {
+      color: #888;
+    }
+
+    .status-processing {
+      color: #f0ad4e;
+      font-weight: bold;
+    }
+
+    .status-success {
+      color: #5cb85c;
+      font-weight: bold;
+    }
+
+    .status-error {
+      color: #d9534f;
+      font-weight: bold;
+    }
+
+    .error-reason {
+      font-size: 11px;
+      color: #d9534f;
+      display: block;
+      margin-top: 3px;
+    }
+
+    .empty-message {
+      padding: 40px;
+      text-align: center;
+      color: #999;
+    }
+
+    /* 검색창 스타일 */
+    .search-box {
+      display: none;
+      position: fixed;
+      top: 10px;
+      right: 20px;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+      padding: 8px 12px;
+      z-index: 10000;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .search-box.active {
+      display: flex;
+    }
+
+    .search-box input {
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      padding: 5px 10px;
+      font-size: 14px;
+      width: 200px;
+      outline: none;
+    }
+
+    .search-box input:focus {
+      border-color: #4a90d9;
+    }
+
+    .search-box .search-info {
+      font-size: 12px;
+      color: #666;
+      min-width: 60px;
+    }
+
+    .search-box .search-nav {
+      display: flex;
+      gap: 4px;
+    }
+
+    .search-box .search-nav button {
+      background: #f0f0f0;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      padding: 4px 8px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .search-box .search-nav button:hover {
+      background: #e0e0e0;
+    }
+
+    .search-box .search-close {
+      background: none;
+      border: none;
+      font-size: 18px;
+      cursor: pointer;
+      color: #666;
+      padding: 0 4px;
+    }
+
+    .search-box .search-close:hover {
+      color: #333;
+    }
+
+    .search-highlight {
+      background-color: #ffff00 !important;
+      color: #000 !important;
+    }
+
+    .search-highlight-current {
+      background-color: #ff9632 !important;
+      color: #000 !important;
+    }
+
+    /* 참조 셀 컨텍스트 메뉴 */
+    .ref-context-menu {
+      display: none;
+      position: fixed;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      z-index: 1000;
+      min-width: 120px;
+    }
+
+    .ref-context-menu.show {
+      display: block;
+    }
+
+    .ref-context-menu-item {
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 13px;
+      border-bottom: 1px solid #eee;
+    }
+
+    .ref-context-menu-item:last-child {
+      border-bottom: none;
+    }
+
+    .ref-context-menu-item:hover {
+      background: #f5f5f5;
+    }
+
+    .progress-bar {
+      height: 4px;
+      background: #e0e0e0;
+      border-radius: 2px;
+      margin: 15px 20px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: #5cb85c;
+      width: 0%;
+      transition: width 0.3s;
+    }
+
+    /* 데이터 미리보기 */
+    .data-preview {
+      margin-top: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background: #fff;
+    }
+
+    .data-preview-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      background: #f5f5f5;
+      border-bottom: 1px solid #ddd;
+      font-size: 13px;
+      font-weight: bold;
+    }
+
+    .btn-expand {
+      background: none;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      padding: 2px 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .btn-expand:hover {
+      background: #e0e0e0;
+    }
+
+    .data-preview-table-wrapper {
+      max-height: 200px;
+      overflow: auto;
+    }
+
+    .data-preview-table {
+      border-collapse: collapse;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .data-preview-table th,
+    .data-preview-table td {
+      border: 1px solid #ddd;
+      padding: 4px 8px;
+      text-align: left;
+      min-width: 40px;
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .data-preview-table th {
+      background: #e9e9e9;
+      position: sticky;
+      z-index: 2;
+    }
+
+    .data-preview-table thead tr:first-child th {
+      top: 0;
+    }
+
+    .data-preview-table thead tr:nth-child(2) th {
+      top: 23px;
+    }
+
+    .data-preview-table th:first-child,
+    .data-preview-table td:first-child {
+      position: sticky;
+      left: 0;
+      background: #e9e9e9;
+      z-index: 3;
+      min-width: 30px;
+      text-align: center;
+    }
+
+    .data-preview-table thead tr:first-child th:first-child,
+    .data-preview-table thead tr:nth-child(2) th:first-child {
+      z-index: 4;
+    }
+
+    .data-preview-table tr:nth-child(even) td {
+      background: #fafafa;
+    }
+
+    .data-preview-table tr:nth-child(even) td:first-child {
+      background: #e9e9e9;
+    }
+
+    /* 미리보기 전체화면 모달 */
+    .preview-modal-content {
+      background: white;
+      width: 95%;
+      height: 90%;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .preview-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid #ddd;
+      font-weight: bold;
+    }
+
+    .btn-close {
+      background: none;
+      border: none;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px 8px;
+    }
+
+    .btn-close:hover {
+      background: #f0f0f0;
+      border-radius: 4px;
+    }
+
+    .preview-modal-table-wrapper {
+      flex: 1;
+      overflow: auto;
+      padding: 10px;
+    }
+
+    /* 저장 확인 모달 */
+    .save-confirm-modal-content {
+      background: white;
+      width: 400px;
+      border-radius: 8px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+
+    .save-confirm-modal-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid #ddd;
+      font-weight: bold;
+      font-size: 16px;
+      color: #333;
+    }
+
+    .save-confirm-modal-body {
+      padding: 20px;
+      color: #555;
+      line-height: 1.6;
+    }
+
+    .save-confirm-modal-body p {
+      margin: 0 0 8px 0;
+    }
+
+    .save-confirm-modal-buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 16px 20px;
+      border-top: 1px solid #ddd;
+      background: #f9f9f9;
+      border-radius: 0 0 8px 8px;
+    }
+
+    .save-confirm-modal-buttons button {
+      padding: 8px 16px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .btn-cancel {
+      background: #fff;
+      color: #333;
+    }
+
+    .btn-cancel:hover {
+      background: #f0f0f0;
+    }
+
+    .btn-exit-without-save {
+      background: #dc3545;
+      color: white;
+      border-color: #dc3545;
+    }
+
+    .btn-exit-without-save:hover {
+      background: #c82333;
+    }
+
+    .btn-save-exit {
+      background: #28a745;
+      color: white;
+      border-color: #28a745;
+    }
+
+    .btn-save-exit:hover {
+      background: #218838;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>1688 자동 주문 시스템</h1>
+
+    <div class="input-section">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <h3 style="margin: 0;">구글 시트 데이터 입력</h3>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <label style="font-size: 13px; color: #555;">사용자:</label>
+          <select id="userSelect" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-width: 200px;">
+            <option value="">-- 선택하세요 --</option>
+          </select>
+        </div>
+      </div>
+      <p>구글 시트에서 전체 행을 복사해서 붙여넣기 하세요 (A~L열 모두 포함)</p>
+      <p style="font-size: 11px; color: #666;">필요한 열: B(주문번호), E(수량), G(색상), H(사이즈), L(URL)</p>
+      <textarea id="dataInput" placeholder="구글 시트에서 행 전체를 선택하고 복사(Ctrl+C) 후 여기에 붙여넣기(Ctrl+V)"></textarea>
+
+      <div class="button-row">
+        <div class="button-row-left">
+          <button class="btn-login-setup" onclick="openLoginSetup()">로그인 설정</button>
+        </div>
+        <div class="button-row-right">
+          <button class="btn-save" id="btnSave" onclick="parseData()">정리</button>
+          <button class="btn-skip" id="btnSkip" onclick="skipOrders()" disabled>주문 생략</button>
+          <button class="btn-start" id="btnStart" onclick="startOrders()" disabled>주문 진행</button>
+          <button class="btn-stop" id="btnStop" onclick="stopOrders()" style="display: none;">중단</button>
+          <button class="btn-review" id="btnReview" onclick="startReview()" disabled>검수</button>
+          <button class="btn-refcode" id="btnRefCode" onclick="inputRefCodes()" disabled>참조코드 입력</button>
+          <button class="btn-clear" onclick="registerOrderNumbers()">주문번호 등록</button>
+          <input type="file" id="orderNumberFile" accept=".xlsx,.xls" style="display: none;" onchange="handleOrderNumberFile(event)">
+          <button class="btn-save" id="btnSaveSupabase" onclick="saveToSupabase()">저장</button>
+        </div>
+      </div>
+
+      <!-- 데이터 미리보기 -->
+      <div class="data-preview" id="dataPreview" style="display: none;">
+        <div class="data-preview-header">
+          <span>데이터 미리보기 (<span id="previewRowCount">0</span>행)</span>
+          <button class="btn-expand" onclick="openPreviewModal()">⛶</button>
+        </div>
+        <div class="data-preview-table-wrapper">
+          <table class="data-preview-table" id="previewTable">
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="order-list">
+      <h3>
+        <span>주문 목록 <span id="orderCount"></span></span>
+        <div class="order-list-header-buttons">
+          <button class="btn-export btn-apply-cart" onclick="applyAllCartData()">일괄 적용</button>
+          <button class="btn-export btn-export-success" onclick="exportSuccessOrders()">성공</button>
+          <button class="btn-export btn-export-fail" onclick="exportFailedOrders()">실패</button>
+        </div>
+      </h3>
+      <div class="progress-bar" id="progressBar" style="display: none;">
+        <div class="progress-bar-fill" id="progressFill"></div>
+      </div>
+      <!-- 테이블 검색 -->
+      <div class="table-search-bar">
+        <input type="text" id="tableSearchInput" placeholder="주문번호 또는 판매자명 검색..." oninput="filterOrderTable(this.value)">
+        <span class="table-search-count" id="tableSearchCount"></span>
+        <button class="table-search-clear" onclick="clearTableSearch()" title="검색 초기화">✕</button>
+      </div>
+      <div id="orderListContent">
+        <div class="empty-message">데이터를 입력하고 저장 버튼을 클릭하세요</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 검색창 -->
+  <div class="search-box" id="searchBox">
+    <input type="text" id="searchInput" placeholder="검색...">
+    <span class="search-info" id="searchInfo"></span>
+    <div class="search-nav">
+      <button onclick="searchPrev()">▲</button>
+      <button onclick="searchNext()">▼</button>
+    </div>
+    <button class="search-close" onclick="closeSearch()">×</button>
+  </div>
+
+  <!-- 참조 셀 컨텍스트 메뉴 -->
+  <div class="ref-context-menu" id="refContextMenu">
+    <div class="ref-context-menu-item" onclick="refMenuCopy()">📋 참조코드 복사</div>
+    <div class="ref-context-menu-item" onclick="refMenuMarkSuccess()">✅ 정상처리</div>
+  </div>
+
+  <!-- 사유 선택 모달 -->
+  <div class="modal-overlay" id="reasonModal">
+    <div class="modal-content">
+      <div class="modal-title">사유 선택</div>
+      <div class="modal-buttons">
+        <button class="modal-btn" data-reason="최소주문 2개">최소주문 2개</button>
+        <button class="modal-btn" data-reason="최소주문 3개">최소주문 3개</button>
+        <button class="modal-btn" data-reason="링크없음">링크없음</button>
+        <button class="modal-btn" data-reason="품절">품절</button>
+        <button class="modal-btn" data-reason="이미지 옵션명 불일치">이미지 옵션명 불일치</button>
+        <button class="modal-btn" data-reason="옵션명 없음">옵션명 없음</button>
+        <button class="modal-btn" data-reason="직접입력" id="btnCustomReason">직접 입력</button>
+        <input type="text" class="modal-input" id="customReasonInput" placeholder="직접 입력..." disabled>
+        <hr style="border: none; border-top: 1px solid #ddd; margin: 15px 0;">
+        <button class="modal-btn-clear" onclick="clearReason()">지우기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 데이터 미리보기 전체화면 모달 -->
+  <div class="modal-overlay" id="previewModal" onclick="closePreviewModal(event)">
+    <div class="preview-modal-content" onclick="event.stopPropagation()">
+      <div class="preview-modal-header">
+        <span>데이터 미리보기 (<span id="previewModalRowCount">0</span>행)</span>
+        <button class="btn-close" onclick="closePreviewModal()">✕</button>
+      </div>
+      <div class="preview-modal-table-wrapper">
+        <table class="data-preview-table" id="previewModalTable">
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 저장 확인 모달 -->
+  <div id="saveConfirmModal" class="modal-overlay">
+    <div class="save-confirm-modal-content">
+      <div class="save-confirm-modal-header">
+        <span>저장되지 않은 데이터가 있습니다</span>
+      </div>
+      <div class="save-confirm-modal-body">
+        <p>주문 데이터가 Supabase에 저장되지 않았습니다.</p>
+        <p>저장하시겠습니까?</p>
+      </div>
+      <div class="save-confirm-modal-buttons">
+        <button class="btn-cancel" onclick="closeSaveConfirmModal()">취소</button>
+        <button class="btn-exit-without-save" onclick="exitWithoutSave()">저장하지 않고 종료</button>
+        <button class="btn-save-exit" onclick="saveAndExit()">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

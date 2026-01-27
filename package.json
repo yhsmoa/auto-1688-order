@@ -1,0 +1,75 @@
+{
+  "name": "auto-1688-order",
+  "version": "1.0.0",
+  "description": "1688 자동 주문 시스템",
+  "main": "main.js",
+  "author": "Your Name",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electronmon .",
+    "test": "node test-click.js",
+    "build": "electron-builder --win",
+    "build:dir": "electron-builder --win --dir",
+    "publish": "electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.91.0",
+    "dotenv": "^17.2.3",
+    "electron-updater": "^6.7.3",
+    "playwright": "^1.40.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "electronmon": "^2.0.4"
+  },
+  "build": {
+    "appId": "com.auto1688order.app",
+    "productName": "1688 자동 주문",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!node_modules/**/playwright/.local-browsers/**/*",
+      "!dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": ".env",
+        "to": ".env"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.ico",
+      "publish": [
+        "github"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": [
+        "ko"
+      ],
+      "language": "1042",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "1688 자동 주문"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "yhsmoa",
+      "repo": "auto-1688-order"
+    }
+  }
+}

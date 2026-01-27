@@ -1,0 +1,18 @@
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('api', {
+  processOrders: (orders) => ipcRenderer.invoke('process-orders', orders),
+  onProgress: (callback) => ipcRenderer.on('order-progress', (event, data) => callback(data)),
+  startReview: (orders) => ipcRenderer.invoke('start-review', orders),
+  onReviewProgress: (callback) => ipcRenderer.on('review-progress', (event, data) => callback(data)),
+  stopProcessing: () => ipcRenderer.send('stop-processing'),
+  inputRefCodes: (groupedCodes) => ipcRenderer.invoke('input-ref-codes', groupedCodes),
+  openLoginBrowser: () => ipcRenderer.invoke('open-login-browser'),
+  // Supabase 환경 변수
+  getEnv: (key) => process.env[key],
+  // 창 닫기 관련
+  onCheckUnsavedData: (callback) => ipcRenderer.on('check-unsaved-data', () => callback()),
+  sendUnsavedDataResponse: (hasUnsavedData) => ipcRenderer.send('unsaved-data-response', hasUnsavedData),
+  forceClose: () => ipcRenderer.send('force-close'),
+  closeAfterSave: () => ipcRenderer.send('close-after-save')
+});
