@@ -25,7 +25,6 @@
     h1 {
       text-align: center;
       color: #333;
-      margin-bottom: 20px;
     }
 
     .input-section {
@@ -179,12 +178,97 @@
     }
 
     .btn-login-setup {
-      background: #4a90d9;
+      background: #6c757d;
       color: white;
+      padding: 6px 12px;
+      font-size: 12px;
     }
 
     .btn-login-setup:hover {
-      background: #3a7bc8;
+      background: #5a6268;
+    }
+
+    /* 버튼 단계 스타일 */
+    .button-steps {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      margin-top: 15px;
+      flex-wrap: wrap;
+    }
+
+    .step-arrow {
+      color: #999;
+      font-size: 14px;
+      padding: 0 2px;
+    }
+
+    .btn-step {
+      background: #adb5bd;
+      color: white;
+      padding: 10px 14px;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      min-width: 80px;
+      text-align: center;
+    }
+
+    .btn-step:hover:not(:disabled) {
+      filter: brightness(0.9);
+    }
+
+    .btn-step:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .btn-step.completed {
+      background: #4a90d9;
+    }
+
+    .btn-step.next {
+      background: #28a745;
+    }
+
+    .btn-step.active {
+      background: #ffc107;
+      color: #333;
+    }
+
+    .step-group {
+      display: flex;
+      gap: 4px;
+    }
+
+    .btn-step-success {
+      background: #adb5bd;
+      color: white;
+    }
+
+    .btn-step-success.completed {
+      background: #5cb85c;
+    }
+
+    .btn-step-fail {
+      background: #adb5bd;
+      color: white;
+    }
+
+    .btn-step-fail.completed {
+      background: #d9534f;
+    }
+
+    .btn-step-deduct {
+      background: #adb5bd;
+      color: white;
+    }
+
+    .btn-step-deduct.completed {
+      background: #17a2b8;
     }
 
     .order-list {
@@ -834,7 +918,10 @@
 </head>
 <body>
   <div class="container">
-    <h1>1688 자동 주문 시스템</h1>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+      <h1 style="margin: 0;">1688 자동 주문 시스템</h1>
+      <button class="btn-login-setup" onclick="openLoginSetup()">로그인 설정</button>
+    </div>
 
     <div class="input-section">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -850,20 +937,29 @@
       <p style="font-size: 11px; color: #666;">필요한 열: B(주문번호), E(수량), G(색상), H(사이즈), L(URL)</p>
       <textarea id="dataInput" placeholder="구글 시트에서 행 전체를 선택하고 복사(Ctrl+C) 후 여기에 붙여넣기(Ctrl+V)"></textarea>
 
-      <div class="button-row">
-        <div class="button-row-left">
-          <button class="btn-login-setup" onclick="openLoginSetup()">로그인 설정</button>
-        </div>
-        <div class="button-row-right">
-          <button class="btn-save" id="btnSave" onclick="parseData()">정리</button>
-          <button class="btn-skip" id="btnSkip" onclick="skipOrders()" disabled>주문 생략</button>
-          <button class="btn-start" id="btnStart" onclick="startOrders()" disabled>주문 진행</button>
+      <div class="button-steps">
+        <button class="btn-step next" id="btnSave" onclick="parseData()">정리</button>
+        <span class="step-arrow">➜</span>
+        <div class="step-group">
+          <button class="btn-step" id="btnSkip" onclick="skipOrders()" disabled>주문 생략</button>
+          <button class="btn-step" id="btnStart" onclick="startOrders()" disabled>주문 진행</button>
           <button class="btn-stop" id="btnStop" onclick="stopOrders()" style="display: none;">중단</button>
-          <button class="btn-review" id="btnReview" onclick="startReview()" disabled>검수</button>
-          <button class="btn-refcode" id="btnRefCode" onclick="inputRefCodes()" disabled>참조코드 입력</button>
-          <button class="btn-clear" onclick="registerOrderNumbers()">주문번호 등록</button>
-          <input type="file" id="orderNumberFile" accept=".xlsx,.xls" style="display: none;" onchange="handleOrderNumberFile(event)">
-          <button class="btn-save" id="btnSaveSupabase" onclick="saveToSupabase()">저장</button>
+        </div>
+        <span class="step-arrow">➜</span>
+        <button class="btn-step" id="btnReview" onclick="startReview()" disabled>검수</button>
+        <span class="step-arrow">➜</span>
+        <button class="btn-step" id="btnRefCode" onclick="inputRefCodes()" disabled>참조코드 입력</button>
+        <span class="step-arrow">➜</span>
+        <button class="btn-step" id="btnOrderNumber" onclick="registerOrderNumbers()">주문번호 등록</button>
+        <input type="file" id="orderNumberFile" accept=".xlsx,.xls" style="display: none;" onchange="handleOrderNumberFile(event)">
+        <span class="step-arrow">➜</span>
+        <button class="btn-step" id="btnSaveSupabase" onclick="saveToSupabase()">저장</button>
+        <span class="step-arrow">➜</span>
+        <button class="btn-step btn-step-deduct" id="btnDeduct" onclick="deductStock()">차감</button>
+        <span class="step-arrow">➜</span>
+        <div class="step-group">
+          <button class="btn-step btn-step-success" id="btnExportSuccess" onclick="exportSuccessOrders()">성공</button>
+          <button class="btn-step btn-step-fail" id="btnExportFail" onclick="exportFailedOrders()">실패</button>
         </div>
       </div>
 
@@ -885,8 +981,6 @@
         <span>주문 목록 <span id="orderCount"></span></span>
         <div class="order-list-header-buttons">
           <button class="btn-export btn-apply-cart" onclick="applyAllCartData()">일괄 적용</button>
-          <button class="btn-export btn-export-success" onclick="exportSuccessOrders()">성공</button>
-          <button class="btn-export btn-export-fail" onclick="exportFailedOrders()">실패</button>
         </div>
       </h3>
       <div class="progress-bar" id="progressBar" style="display: none;">

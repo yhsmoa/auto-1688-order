@@ -6,6 +6,112 @@ let unmatchedExcelData = [];  // 매칭되지 않은 엑셀 데이터
 let isDataSaved = true;  // 데이터 저장 여부 플래그
 let pendingAction = null;  // 대기 중인 액션 ('refresh' 또는 'close')
 
+// 버튼 단계 상태 관리
+let stepStatus = {
+  parse: false,      // 정리
+  order: false,      // 주문 생략/진행
+  review: false,     // 검수
+  refCode: false,    // 참조코드 입력
+  orderNumber: false,// 주문번호 등록
+  save: false,       // 저장
+  deduct: false,     // 차감
+  success: false,    // 성공 내보내기
+  fail: false        // 실패 내보내기
+};
+
+// 버튼 상태 업데이트
+function updateButtonSteps() {
+  const btnSave = document.getElementById('btnSave');
+  const btnSkip = document.getElementById('btnSkip');
+  const btnStart = document.getElementById('btnStart');
+  const btnReview = document.getElementById('btnReview');
+  const btnRefCode = document.getElementById('btnRefCode');
+  const btnOrderNumber = document.getElementById('btnOrderNumber');
+  const btnSaveSupabase = document.getElementById('btnSaveSupabase');
+  const btnDeduct = document.getElementById('btnDeduct');
+  const btnExportSuccess = document.getElementById('btnExportSuccess');
+  const btnExportFail = document.getElementById('btnExportFail');
+
+  // 모든 버튼에서 상태 클래스 제거
+  const allBtns = [btnSave, btnSkip, btnStart, btnReview, btnRefCode, btnOrderNumber, btnSaveSupabase, btnDeduct, btnExportSuccess, btnExportFail];
+  allBtns.forEach(btn => {
+    if (btn) {
+      btn.classList.remove('completed', 'next', 'active');
+    }
+  });
+
+  // 단계별 상태 적용
+  if (stepStatus.parse) {
+    btnSave.classList.add('completed');
+    // 다음 단계 표시
+    if (!stepStatus.order) {
+      btnSkip.classList.add('next');
+      btnStart.classList.add('next');
+    }
+  } else {
+    btnSave.classList.add('next');
+  }
+
+  if (stepStatus.order) {
+    btnSkip.classList.add('completed');
+    btnStart.classList.add('completed');
+    if (!stepStatus.review) {
+      btnReview.classList.add('next');
+    }
+  }
+
+  if (stepStatus.review) {
+    btnReview.classList.add('completed');
+    if (!stepStatus.refCode) {
+      btnRefCode.classList.add('next');
+    }
+  }
+
+  if (stepStatus.refCode) {
+    btnRefCode.classList.add('completed');
+    if (!stepStatus.orderNumber) {
+      btnOrderNumber.classList.add('next');
+    }
+  }
+
+  if (stepStatus.orderNumber) {
+    btnOrderNumber.classList.add('completed');
+    if (!stepStatus.save) {
+      btnSaveSupabase.classList.add('next');
+    }
+  }
+
+  if (stepStatus.save) {
+    btnSaveSupabase.classList.add('completed');
+    if (!stepStatus.deduct) {
+      btnDeduct.classList.add('next');
+    }
+  }
+
+  if (stepStatus.deduct) {
+    btnDeduct.classList.add('completed');
+    if (!stepStatus.success && !stepStatus.fail) {
+      btnExportSuccess.classList.add('next');
+      btnExportFail.classList.add('next');
+    }
+  }
+
+  if (stepStatus.success) {
+    btnExportSuccess.classList.add('completed');
+  }
+
+  if (stepStatus.fail) {
+    btnExportFail.classList.add('completed');
+  }
+}
+
+// 차감 함수 (placeholder - 실제 구현 필요)
+function deductStock() {
+  alert('차감 기능은 아직 구현되지 않았습니다.');
+  stepStatus.deduct = true;
+  updateButtonSteps();
+}
+
 // Supabase 클라이언트 (나중에 초기화)
 let supabaseClient = null;
 
@@ -273,11 +379,14 @@ function parseData() {
   renderDataPreview();
 
   renderOrderList();
-  document.getElementById('btnSave').disabled = true;
   document.getElementById('btnSkip').disabled = false;
   document.getElementById('btnStart').disabled = false;
   document.getElementById('btnReview').disabled = false;
   document.getElementById('btnRefCode').disabled = false;
+
+  // 버튼 상태 업데이트
+  stepStatus.parse = true;
+  updateButtonSteps();
 }
 
 // Supabase 컬럼 매핑 (인덱스 -> 컬럼명)
@@ -742,6 +851,10 @@ function skipOrders() {
   // 화면 갱신
   renderOrderList();
 
+  // 버튼 상태 업데이트
+  stepStatus.order = true;
+  updateButtonSteps();
+
   // 안내 메시지
   const skippedCount = targetOrders.length;
   alert(`${skippedCount}건의 주문이 생략 처리되었습니다.\n[검수] 버튼을 클릭하여 검수를 진행하세요.`);
@@ -768,6 +881,9 @@ window.api.onProgress((progress) => {
   // 완료 시
   if (completed === orders.length) {
     document.getElementById('progressBar').style.display = 'none';
+    // 버튼 상태 업데이트
+    stepStatus.order = true;
+    updateButtonSteps();
   }
 });
 
@@ -949,6 +1065,10 @@ function saveOrderNumbers() {
   }
 
   renderOrderList();
+
+  // 버튼 상태 업데이트
+  stepStatus.orderNumber = true;
+  updateButtonSteps();
 
   let message = `${matchCount}개의 주문에 주문번호가 추가되었습니다.`;
   if (unmatchedExcelData.length > 0) {
@@ -1357,6 +1477,10 @@ async function startReview() {
     // 검수 완료 후 화면 갱신 (완료 열은 자동 계산됨)
     renderOrderList();
 
+    // 버튼 상태 업데이트
+    stepStatus.review = true;
+    updateButtonSteps();
+
   } catch (error) {
     alert('검수 중 오류가 발생했습니다: ' + error.message);
   } finally {
@@ -1630,6 +1754,11 @@ function exportSuccessOrders() {
   // 클립보드에 복사
   const exportData = rows.join('\n');
   copyToClipboard(exportData);
+
+  // 버튼 상태 업데이트
+  stepStatus.success = true;
+  updateButtonSteps();
+
   alert(`${completedOrders.length}건의 성공 데이터가 복사되었습니다.`);
 }
 
@@ -1696,6 +1825,11 @@ function exportFailedOrders() {
 
   const exportData = rows.join('\n');
   copyToClipboard(exportData);
+
+  // 버튼 상태 업데이트
+  stepStatus.fail = true;
+  updateButtonSteps();
+
   alert(`${failedOrders.length}건의 실패 데이터가 복사되었습니다.`);
 }
 
@@ -1787,6 +1921,10 @@ async function inputRefCodes() {
     }
 
     renderOrderList();
+
+    // 버튼 상태 업데이트
+    stepStatus.refCode = true;
+    updateButtonSteps();
 
     // 빈 textarea 경고 표시
     if (result.emptyTextareaCount > 0) {
@@ -2236,6 +2374,10 @@ async function saveToSupabase() {
 
     // 저장 완료 표시
     isDataSaved = true;
+
+    // 버튼 상태 업데이트
+    stepStatus.save = true;
+    updateButtonSteps();
 
   } catch (error) {
     console.error('저장 중 예외 발생:', error);
