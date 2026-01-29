@@ -935,10 +935,10 @@
       </div>
       <p>구글 시트에서 전체 행을 복사해서 붙여넣기 하세요 (A~L열 모두 포함)</p>
       <p style="font-size: 11px; color: #666;">필요한 열: B(주문번호), E(수량), G(색상), H(사이즈), L(URL)</p>
-      <textarea id="dataInput" placeholder="구글 시트에서 행 전체를 선택하고 복사(Ctrl+C) 후 여기에 붙여넣기(Ctrl+V)"></textarea>
+      <textarea id="dataInput" placeholder="먼저 위에서 사용자를 선택해주세요" disabled style="opacity: 0.5;"></textarea>
 
       <div class="button-steps">
-        <button class="btn-step next" id="btnSave" onclick="parseData()">정리</button>
+        <button class="btn-step" id="btnSave" onclick="parseData()" disabled>정리</button>
         <span class="step-arrow">➜</span>
         <div class="step-group">
           <button class="btn-step" id="btnSkip" onclick="skipOrders()" disabled>주문 생략</button>

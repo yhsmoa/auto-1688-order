@@ -105,11 +105,309 @@ function updateButtonSteps() {
   }
 }
 
-// 차감 함수 (placeholder - 실제 구현 필요)
+// 차감 기능 - 엑셀 파일 업로드
 function deductStock() {
-  alert('차감 기능은 아직 구현되지 않았습니다.');
-  stepStatus.deduct = true;
-  updateButtonSteps();
+  if (orders.length === 0) {
+    alert('먼저 주문 데이터를 정리해주세요.');
+    return;
+  }
+
+  // 파일 입력 요소 생성
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.xlsx,.xls';
+  fileInput.style.display = 'none';
+
+  fileInput.addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    try {
+      await processDeductExcel(file);
+    } catch (error) {
+      console.error('차감 엑셀 처리 오류:', error);
+      alert('엑셀 파일 처리 중 오류가 발생했습니다: ' + error.message);
+    }
+  });
+
+  document.body.appendChild(fileInput);
+  fileInput.click();
+  document.body.removeChild(fileInput);
+}
+
+// 차감 엑셀 파일 처리
+async function processDeductExcel(file) {
+  const btnDeduct = document.getElementById('btnDeduct');
+  const originalText = btnDeduct ? btnDeduct.textContent : '차감';
+
+  if (btnDeduct) {
+    btnDeduct.disabled = true;
+    btnDeduct.textContent = '처리 중...';
+  }
+
+  try {
+    const data = await file.arrayBuffer();
+    const workbook = XLSX.read(data, { type: 'array' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+
+    // 시트를 배열로 변환 (헤더 포함, 병합 셀 처리)
+    const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+      header: 1,
+      defval: '',
+      blankrows: false
+    });
+
+    if (jsonData.length < 2) {
+      alert('엑셀 파일에 데이터가 없습니다.');
+      return;
+    }
+
+    // 병합 셀 정보 가져오기
+    const merges = worksheet['!merges'] || [];
+
+    // AD열 = 29번 인덱스 (0부터 시작, A=0, B=1, ... AD=29)
+    // G열 = 6번 인덱스
+    // I열 = 8번 인덱스
+    const AD_COL = 29;
+    const G_COL = 6;
+    const I_COL = 8;
+
+    // 현재 주문의 order_code 목록 가져오기
+    const currentOrderCodes = new Set();
+    orders.forEach(order => {
+      if (order.orderCode) {
+        currentOrderCodes.add(order.orderCode);
+      } else if (order.dbData && order.dbData.order_code) {
+        currentOrderCodes.add(order.dbData.order_code);
+      }
+    });
+
+    if (currentOrderCodes.size === 0) {
+      alert('현재 주문 데이터에 주문코드(S열)가 없습니다.');
+      return;
+    }
+
+    console.log('현재 주문코드 목록:', Array.from(currentOrderCodes));
+
+    // 엑셀 AD열에서 주문코드 추출 및 검증
+    const excelOrderCodes = new Set();
+    const mismatchedCodes = [];
+
+    // 병합 셀 값을 채우는 헬퍼 함수
+    function getMergedValue(rowIdx, colIdx, data, merges) {
+      // 현재 셀에 값이 있으면 반환
+      if (data[rowIdx] && data[rowIdx][colIdx] !== undefined && data[rowIdx][colIdx] !== '') {
+        return data[rowIdx][colIdx];
+      }
+
+      // 병합 셀인지 확인
+      for (const merge of merges) {
+        if (rowIdx >= merge.s.r && rowIdx <= merge.e.r &&
+            colIdx >= merge.s.c && colIdx <= merge.e.c) {
+          // 병합 셀의 시작 셀 값 반환
+          if (data[merge.s.r] && data[merge.s.r][merge.s.c] !== undefined) {
+            return data[merge.s.r][merge.s.c];
+          }
+        }
+      }
+
+      return '';
+    }
+
+    // 2행부터 데이터 검증 (1행은 헤더)
+    for (let i = 1; i < jsonData.length; i++) {
+      const adValue = getMergedValue(i, AD_COL, jsonData, merges);
+
+      if (adValue && adValue.toString().trim()) {
+        // "주문코드 | 주문번호(줄임) | 주문번호(줄임)" 형식에서 주문코드 추출
+        const parts = adValue.toString().split('|');
+        const orderCode = parts[0].trim();
+
+        if (orderCode) {
+          excelOrderCodes.add(orderCode);
+
+          // 현재 주문목록에 없는 코드인지 확인
+          if (!currentOrderCodes.has(orderCode)) {
+            mismatchedCodes.push(orderCode);
+          }
+        }
+      }
+    }
+
+    console.log('엑셀 주문코드 목록:', Array.from(excelOrderCodes));
+    console.log('불일치 코드:', mismatchedCodes);
+
+    // 불일치 코드가 있으면 경고
+    if (mismatchedCodes.length > 0) {
+      alert(`엑셀 파일을 확인해주세요.\n다른 주문코드(AD열)가 확인됩니다.\n\n불일치 코드: ${mismatchedCodes.join(', ')}`);
+      return;
+    }
+
+    // 주문코드가 하나도 없으면 경고
+    if (excelOrderCodes.size === 0) {
+      alert('엑셀 파일의 AD열에서 주문코드를 찾을 수 없습니다.');
+      return;
+    }
+
+    // G열과 I열 합계 계산 (병합 셀 고려)
+    let delivery_fee = 0;
+    let total_I = 0;
+
+    for (let i = 1; i < jsonData.length; i++) {
+      const gValue = getMergedValue(i, G_COL, jsonData, merges);
+      const iValue = getMergedValue(i, I_COL, jsonData, merges);
+
+      // 숫자로 변환 (쉼표 제거)
+      const gNum = parseFloat(String(gValue).replace(/,/g, '')) || 0;
+      const iNum = parseFloat(String(iValue).replace(/,/g, '')) || 0;
+
+      delivery_fee += gNum;
+      total_I += iNum;
+    }
+
+    // 계산
+    const price = total_I - delivery_fee;
+    const service_fee = Math.round(price * 0.6 * 100) / 100;  // 60% 수수료, 소수점 2자리
+    const amount = delivery_fee + price + service_fee;
+
+    console.log('=== 차감 계산 결과 ===');
+    console.log('delivery_fee (G열 합계):', delivery_fee);
+    console.log('total_I (I열 합계):', total_I);
+    console.log('price (I열 - G열):', price);
+    console.log('service_fee (price * 0.6):', service_fee);
+    console.log('amount (합계):', amount);
+
+    // 대표 주문코드 (첫 번째 코드 사용)
+    const orderCode = Array.from(excelOrderCodes)[0];
+
+    // Supabase에 저장
+    await saveDeductTransaction({
+      order_code: orderCode,
+      delivery_fee: delivery_fee,
+      price: price,
+      service_fee: service_fee,
+      amount: amount
+    });
+
+  } finally {
+    if (btnDeduct) {
+      btnDeduct.disabled = false;
+      btnDeduct.textContent = originalText;
+    }
+  }
+}
+
+// 차감 트랜잭션 Supabase 저장
+async function saveDeductTransaction(calcData) {
+  if (!supabaseClient) {
+    alert('Supabase 연결이 초기화되지 않았습니다.');
+    return;
+  }
+
+  // 선택된 사용자 정보 가져오기
+  const userSelect = document.getElementById('userSelect');
+  const selectedUserId = userSelect ? userSelect.value : '';
+  const selectedOption = userSelect ? userSelect.options[userSelect.selectedIndex] : null;
+  const selectedMasterAccount = selectedOption ? selectedOption.dataset.masterAccount : '';
+
+  if (!selectedUserId) {
+    alert('사용자를 선택해주세요.');
+    return;
+  }
+
+  // 오늘 날짜 (YYYY-MM-DD)
+  const today = new Date();
+  const dateStr = today.toISOString().split('T')[0];
+
+  // 저장할 데이터
+  const transactionData = {
+    order_code: calcData.order_code,
+    user_id: selectedUserId,
+    transaction_type: '차감',
+    description: calcData.order_code + ' 주문',
+    '1688_order_id': null,
+    amount: calcData.amount,
+    delivery_fee: calcData.delivery_fee,
+    service_fee: calcData.service_fee,
+    extra_fee: null,
+    balance_after: null,
+    status: '성공',
+    admin_note: null,
+    updated_at: null,
+    price: calcData.price,
+    master_account: selectedMasterAccount,
+    date: dateStr
+  };
+
+  console.log('=== 차감 트랜잭션 저장 ===');
+  console.log('저장할 데이터:', transactionData);
+
+  try {
+    const { data, error } = await supabaseClient
+      .from('invoiceManager_transactions')
+      .insert([transactionData])
+      .select();
+
+    if (error) {
+      console.error('차감 저장 오류:', error);
+      alert(`차감 저장 실패: ${error.message}`);
+      return;
+    }
+
+    console.log('✓ 차감 저장 완료:', data);
+
+    // 저장 검증 - 실제로 데이터가 저장됐는지 확인
+    if (!data || data.length === 0) {
+      alert('차감 저장 실패: 데이터가 반환되지 않았습니다.');
+      return;
+    }
+
+    const savedId = data[0].id;
+    console.log('저장된 ID:', savedId);
+
+    // ID로 다시 조회하여 검증
+    const { data: verifyData, error: verifyError } = await supabaseClient
+      .from('invoiceManager_transactions')
+      .select('*')
+      .eq('id', savedId)
+      .single();
+
+    if (verifyError) {
+      console.error('차감 검증 오류:', verifyError);
+      alert(`차감 저장 검증 실패: ${verifyError.message}\n\n데이터가 저장되지 않았을 수 있습니다.`);
+      return;
+    }
+
+    if (!verifyData) {
+      alert('차감 저장 검증 실패: 저장된 데이터를 찾을 수 없습니다.');
+      return;
+    }
+
+    // 저장된 데이터 값 검증
+    const isValid =
+      verifyData.order_code === calcData.order_code &&
+      parseFloat(verifyData.amount) === calcData.amount &&
+      parseFloat(verifyData.delivery_fee) === calcData.delivery_fee &&
+      parseFloat(verifyData.price) === calcData.price;
+
+    if (!isValid) {
+      console.error('데이터 불일치:', { saved: verifyData, expected: calcData });
+      alert('차감 저장 검증 실패: 저장된 데이터가 일치하지 않습니다.');
+      return;
+    }
+
+    console.log('✓ 차감 저장 검증 완료:', verifyData);
+    alert(`차감 저장 및 검증 완료!\n\n주문코드: ${calcData.order_code}\n배송비: ${calcData.delivery_fee.toLocaleString()}원\n상품가: ${calcData.price.toLocaleString()}원\n수수료: ${calcData.service_fee.toLocaleString()}원\n총액: ${calcData.amount.toLocaleString()}원\n\n✓ Supabase 저장 확인됨 (ID: ${savedId})`);
+
+    // 버튼 상태 업데이트
+    stepStatus.deduct = true;
+    updateButtonSteps();
+
+  } catch (error) {
+    console.error('차감 저장 예외:', error);
+    alert('차감 저장 중 오류가 발생했습니다: ' + error.message);
+  }
 }
 
 // Supabase 클라이언트 (나중에 초기화)
@@ -185,6 +483,37 @@ function populateUserSelect() {
     option.dataset.masterAccount = user.master_account;
     select.appendChild(option);
   });
+
+  // 초기 상태: 데이터 입력 비활성화
+  updateDataInputState();
+
+  // 사용자 선택 시 데이터 입력 활성화
+  select.addEventListener('change', () => {
+    updateDataInputState();
+  });
+}
+
+// 사용자 선택 여부에 따라 데이터 입력 활성화/비활성화
+function updateDataInputState() {
+  const select = document.getElementById('userSelect');
+  const dataInput = document.getElementById('dataInput');
+  const btnSave = document.getElementById('btnSave');
+
+  if (!select || !dataInput) return;
+
+  const isUserSelected = select.value !== '';
+
+  if (isUserSelected) {
+    dataInput.disabled = false;
+    dataInput.style.opacity = '1';
+    dataInput.placeholder = '구글 시트에서 행 전체를 선택하고 복사(Ctrl+C) 후 여기에 붙여넣기(Ctrl+V)';
+    if (btnSave) btnSave.disabled = false;
+  } else {
+    dataInput.disabled = true;
+    dataInput.style.opacity = '0.5';
+    dataInput.placeholder = '먼저 위에서 사용자를 선택해주세요';
+    if (btnSave) btnSave.disabled = true;
+  }
 }
 
 // 페이지 떠나기 전 확인 (beforeunload) - 새로고침용
