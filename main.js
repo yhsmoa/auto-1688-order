@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const { processOrders, stopProcessing } = require('./automation');
 const { autoUpdater } = require('electron-updater');
@@ -98,8 +98,58 @@ function createWindow() {
   });
 }
 
+// 메뉴 생성
+function createMenu() {
+  const appVersion = app.getVersion();
+
+  const menuTemplate = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: '버전 정보',
+          click: () => {
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              title: '버전 정보',
+              message: `1688 자동 주문 시스템`,
+              detail: `버전: ${appVersion}\n\n© 2024 yhsmoa`,
+              buttons: ['확인']
+            });
+          }
+        },
+        { type: 'separator' },
+        {
+          label: '업데이트 확인',
+          click: () => {
+            autoUpdater.checkForUpdates();
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              title: '업데이트 확인',
+              message: '업데이트를 확인하고 있습니다...',
+              buttons: ['확인']
+            });
+          }
+        },
+        { type: 'separator' },
+        {
+          label: '종료',
+          accelerator: 'Alt+F4',
+          click: () => {
+            mainWindow.close();
+          }
+        }
+      ]
+    }
+  ];
+
+  const menu = Menu.buildFromTemplate(menuTemplate);
+  Menu.setApplicationMenu(menu);
+}
+
 app.whenReady().then(() => {
   createWindow();
+  createMenu();
 
   // 빌드된 앱에서만 업데이트 확인
   if (app.isPackaged) {
