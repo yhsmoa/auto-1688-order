@@ -169,9 +169,11 @@ async function processDeductExcel(file) {
     // AD열 = 29번 인덱스 (0부터 시작, A=0, B=1, ... AD=29)
     // G열 = 6번 인덱스
     // I열 = 8번 인덱스
+    // U열 = 20번 인덱스 (수량)
     const AD_COL = 29;
     const G_COL = 6;
     const I_COL = 8;
+    const U_COL = 20;
 
     // 현재 주문의 order_code 목록 가져오기
     const currentOrderCodes = new Set();
@@ -263,9 +265,10 @@ async function processDeductExcel(file) {
       return true;
     }
 
-    // G열과 I열 합계 계산 (병합 셀: 첫 번째 행에서만 값 가져오기)
+    // G열, I열, U열 합계 계산 (병합 셀: 첫 번째 행에서만 값 가져오기)
     let delivery_fee = 0;
     let total_I = 0;
+    let item_qty = 0;
 
     for (let i = 1; i < jsonData.length; i++) {
       // G열: 병합된 경우 첫 번째 행에서만 값 가져오기
@@ -281,6 +284,11 @@ async function processDeductExcel(file) {
         const iNum = parseFloat(String(iValue).replace(/,/g, '')) || 0;
         total_I += iNum;
       }
+
+      // U열: 수량 합계 (병합 없음)
+      const uValue = jsonData[i] && jsonData[i][U_COL];
+      const uNum = parseInt(String(uValue).replace(/,/g, '')) || 0;
+      item_qty += uNum;
     }
 
     // 계산 (모두 소수점 2자리까지)
@@ -295,6 +303,7 @@ async function processDeductExcel(file) {
     console.log('price (I열 - G열):', price);
     console.log('service_fee (price * 0.06):', service_fee);
     console.log('amount (합계):', amount);
+    console.log('item_qty (U열 합계):', item_qty);
 
     // 대표 주문코드 (첫 번째 코드 사용)
     const orderCode = Array.from(excelOrderCodes)[0];
@@ -305,7 +314,8 @@ async function processDeductExcel(file) {
       delivery_fee: delivery_fee,
       price: price,
       service_fee: service_fee,
-      amount: amount
+      amount: amount,
+      item_qty: item_qty
     });
 
   } finally {
@@ -355,7 +365,8 @@ async function saveDeductTransaction(calcData) {
     updated_at: null,
     price: calcData.price,
     master_account: selectedMasterAccount,
-    date: dateStr
+    date: dateStr,
+    item_qty: calcData.item_qty
   };
 
   console.log('=== 차감 트랜잭션 저장 ===');
