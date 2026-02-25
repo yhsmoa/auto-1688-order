@@ -268,14 +268,14 @@ async function processDeductExcel(file) {
 
     // 계산
     const price = total_I - delivery_fee;
-    const service_fee = Math.round(price * 0.6 * 100) / 100;  // 60% 수수료, 소수점 2자리
+    const service_fee = Math.round(price * 0.06 * 100) / 100;  // 6% 수수료, 소수점 2자리
     const amount = delivery_fee + price + service_fee;
 
     console.log('=== 차감 계산 결과 ===');
     console.log('delivery_fee (G열 합계):', delivery_fee);
     console.log('total_I (I열 합계):', total_I);
     console.log('price (I열 - G열):', price);
-    console.log('service_fee (price * 0.6):', service_fee);
+    console.log('service_fee (price * 0.06):', service_fee);
     console.log('amount (합계):', amount);
 
     // 대표 주문코드 (첫 번째 코드 사용)
