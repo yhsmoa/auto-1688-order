@@ -250,26 +250,44 @@ async function processDeductExcel(file) {
       return;
     }
 
-    // G열과 I열 합계 계산 (병합 셀 고려)
+    // 병합 셀의 첫 번째 행인지 확인하는 함수
+    function isFirstRowOfMerge(rowIdx, colIdx, merges) {
+      for (const merge of merges) {
+        if (rowIdx >= merge.s.r && rowIdx <= merge.e.r &&
+            colIdx >= merge.s.c && colIdx <= merge.e.c) {
+          // 병합 영역에 속함 - 첫 번째 행인지 확인
+          return rowIdx === merge.s.r;
+        }
+      }
+      // 병합 영역에 속하지 않음 - 일반 셀이므로 true 반환
+      return true;
+    }
+
+    // G열과 I열 합계 계산 (병합 셀: 첫 번째 행에서만 값 가져오기)
     let delivery_fee = 0;
     let total_I = 0;
 
     for (let i = 1; i < jsonData.length; i++) {
-      const gValue = getMergedValue(i, G_COL, jsonData, merges);
-      const iValue = getMergedValue(i, I_COL, jsonData, merges);
+      // G열: 병합된 경우 첫 번째 행에서만 값 가져오기
+      if (isFirstRowOfMerge(i, G_COL, merges)) {
+        const gValue = getMergedValue(i, G_COL, jsonData, merges);
+        const gNum = parseFloat(String(gValue).replace(/,/g, '')) || 0;
+        delivery_fee += gNum;
+      }
 
-      // 숫자로 변환 (쉼표 제거)
-      const gNum = parseFloat(String(gValue).replace(/,/g, '')) || 0;
-      const iNum = parseFloat(String(iValue).replace(/,/g, '')) || 0;
-
-      delivery_fee += gNum;
-      total_I += iNum;
+      // I열: 병합된 경우 첫 번째 행에서만 값 가져오기
+      if (isFirstRowOfMerge(i, I_COL, merges)) {
+        const iValue = getMergedValue(i, I_COL, jsonData, merges);
+        const iNum = parseFloat(String(iValue).replace(/,/g, '')) || 0;
+        total_I += iNum;
+      }
     }
 
-    // 계산
-    const price = total_I - delivery_fee;
-    const service_fee = Math.round(price * 0.06 * 100) / 100;  // 6% 수수료, 소수점 2자리
-    const amount = delivery_fee + price + service_fee;
+    // 계산 (모두 소수점 2자리까지)
+    delivery_fee = Math.round(delivery_fee * 100) / 100;
+    const price = Math.round((total_I - delivery_fee) * 100) / 100;
+    const service_fee = Math.round(price * 0.06 * 100) / 100;
+    const amount = Math.round((delivery_fee + price + service_fee) * 100) / 100;
 
     console.log('=== 차감 계산 결과 ===');
     console.log('delivery_fee (G열 합계):', delivery_fee);
