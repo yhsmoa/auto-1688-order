@@ -927,8 +927,14 @@
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
         <h3 style="margin: 0;">구글 시트 데이터 입력</h3>
         <div style="display: flex; align-items: center; gap: 10px;">
+          <!-- users_api 드롭박스 (coupang_name + user_code) -->
           <label style="font-size: 13px; color: #555;">사용자:</label>
           <select id="userSelect" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-width: 200px;">
+            <option value="">-- 선택하세요 --</option>
+          </select>
+          <!-- ft_users 드롭박스 (full_name + user_code) -->
+          <label style="font-size: 13px; color: #555;">유저:</label>
+          <select id="ftUserSelect" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-width: 200px;">
             <option value="">-- 선택하세요 --</option>
           </select>
         </div>
@@ -953,9 +959,15 @@
         <button class="btn-step" id="btnOrderNumber" onclick="registerOrderNumbers()">주문번호 등록</button>
         <input type="file" id="orderNumberFile" accept=".xlsx,.xls" style="display: none;" onchange="handleOrderNumberFile(event)">
         <span class="step-arrow">➜</span>
-        <button class="btn-step" id="btnSaveSupabase" onclick="saveToSupabase()">저장</button>
+        <div class="step-group" style="flex-direction: column; gap: 4px;">
+          <button class="btn-step" id="btnSaveSupabase" onclick="saveToSupabase()">저장</button>
+          <button class="btn-step" id="btnSaveV2" onclick="saveToSupabaseV2()">V2 저장</button>
+        </div>
         <span class="step-arrow">➜</span>
-        <button class="btn-step btn-step-deduct" id="btnDeduct" onclick="deductStock()">차감</button>
+        <div class="step-group" style="flex-direction: column; gap: 4px;">
+          <button class="btn-step btn-step-deduct" id="btnDeduct" onclick="deductStock()">차감</button>
+          <button class="btn-step btn-step-deduct" id="btnDeductV2" onclick="deductStockV2()">V2 차감</button>
+        </div>
         <span class="step-arrow">➜</span>
         <div class="step-group">
           <button class="btn-step btn-step-success" id="btnExportSuccess" onclick="exportSuccessOrders()">성공</button>

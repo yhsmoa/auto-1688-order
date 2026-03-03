@@ -5,7 +5,20 @@
       "Bash(node -c:*)",
       "Bash(npm run build:*)",
       "Bash(dir:*)",
-      "Bash(git init:*)"
+      "Bash(git init:*)",
+      "Bash(git commit:*)",
+      "Bash(git config:*)",
+      "Bash(git push:*)",
+      "Bash(git add:*)",
+      "Bash(set \"GH_TOKEN=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\")",
+      "Bash(npm run publish:*)",
+      "Bash(cmd /c \"cd /d d:\\\\project\\\\auto-1688-order && rd /s /q dist 2>nul\")",
+      "Bash(cmd /c \"cd /d d:\\\\project\\\\auto-1688-order && set GH_TOKEN=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 && npm run publish\")",
+      "Bash(GH_TOKEN=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 npm run publish)",
+      "Bash(ls:*)",
+      "Bash(npm version:*)",
+      "Bash(node:*)",
+      "WebFetch(domain:1688-invoice.up.railway.app)"
     ]
   }
 }
