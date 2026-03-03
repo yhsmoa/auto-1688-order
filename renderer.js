@@ -442,8 +442,9 @@ async function saveDeductTransaction(calcData) {
 // Supabase 클라이언트 (나중에 초기화)
 let supabaseClient = null;
 
-// users_api 데이터 저장
-let usersApiData = [];
+// ========== 드롭박스 데이터 저장 ==========
+let usersApiData = [];   // users_api 테이블 데이터
+let ftUsersData = [];     // ft_users 테이블 데이터
 
 // Supabase 클라이언트 초기화 (페이지 로드 후)
 window.addEventListener('DOMContentLoaded', () => {
@@ -455,8 +456,9 @@ window.addEventListener('DOMContentLoaded', () => {
       supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
       console.log('✓ Supabase 클라이언트 초기화 완료');
 
-      // users_api 데이터 로드
+      // 드롭박스 데이터 로드 (users_api + ft_users)
       loadUsersApi();
+      loadFtUsers();
     } else {
       console.warn('⚠️ Supabase 환경 변수가 설정되지 않았습니다.');
     }
@@ -493,7 +495,66 @@ async function loadUsersApi() {
   }
 }
 
-// 사용자 드롭박스 채우기
+// ========== ft_users 데이터 로드 ==========
+async function loadFtUsers() {
+  if (!supabaseClient) {
+    console.warn('Supabase 클라이언트가 초기화되지 않았습니다.');
+    return;
+  }
+
+  try {
+    const { data, error } = await supabaseClient
+      .from('ft_users')
+      .select('id, full_name, user_code, phone, address')
+      .order('full_name', { ascending: true });
+
+    if (error) {
+      console.error('ft_users 로드 오류:', error);
+      return;
+    }
+
+    ftUsersData = data || [];
+    console.log(`✓ ft_users 로드 완료: ${ftUsersData.length}개`);
+
+    // 드롭박스 채우기
+    populateFtUserSelect();
+  } catch (error) {
+    console.error('ft_users 로드 중 예외:', error);
+  }
+}
+
+// ft_users 드롭박스 채우기
+function populateFtUserSelect() {
+  const select = document.getElementById('ftUserSelect');
+  if (!select) return;
+
+  // 기존 옵션 제거 (첫 번째 옵션 제외)
+  while (select.options.length > 1) {
+    select.remove(1);
+  }
+
+  // ft_users 데이터로 옵션 추가 (full_name + user_code 형식)
+  ftUsersData.forEach(user => {
+    const option = document.createElement('option');
+    option.value = user.id;
+    option.textContent = `${user.full_name} ${user.user_code}`;
+    option.dataset.userCode = user.user_code;
+    option.dataset.fullName = user.full_name;
+    option.dataset.phone = user.phone || '';
+    option.dataset.address = user.address || '';
+    select.appendChild(option);
+  });
+
+  // 초기 상태 업데이트
+  updateDataInputState();
+
+  // 유저 선택 시 데이터 입력 활성화
+  select.addEventListener('change', () => {
+    updateDataInputState();
+  });
+}
+
+// ========== users_api 드롭박스 채우기 ==========
 function populateUserSelect() {
   const select = document.getElementById('userSelect');
   if (!select) return;
@@ -522,17 +583,20 @@ function populateUserSelect() {
   });
 }
 
-// 사용자 선택 여부에 따라 데이터 입력 활성화/비활성화
+// ========== 드롭박스 선택 상태에 따른 입력 활성화/비활성화 ==========
 function updateDataInputState() {
-  const select = document.getElementById('userSelect');
+  const userSelect = document.getElementById('userSelect');
+  const ftUserSelect = document.getElementById('ftUserSelect');
   const dataInput = document.getElementById('dataInput');
   const btnSave = document.getElementById('btnSave');
 
-  if (!select || !dataInput) return;
+  if (!dataInput) return;
 
-  const isUserSelected = select.value !== '';
+  const isUserSelected = userSelect && userSelect.value !== '';
+  const isFtUserSelected = ftUserSelect && ftUserSelect.value !== '';
+  const bothSelected = isUserSelected && isFtUserSelected;
 
-  if (isUserSelected) {
+  if (bothSelected) {
     dataInput.disabled = false;
     dataInput.style.opacity = '1';
     dataInput.placeholder = '구글 시트에서 행 전체를 선택하고 복사(Ctrl+C) 후 여기에 붙여넣기(Ctrl+V)';
@@ -540,7 +604,7 @@ function updateDataInputState() {
   } else {
     dataInput.disabled = true;
     dataInput.style.opacity = '0.5';
-    dataInput.placeholder = '먼저 위에서 사용자를 선택해주세요';
+    dataInput.placeholder = '먼저 위에서 사용자와 유저를 모두 선택해주세요';
     if (btnSave) btnSave.disabled = true;
   }
 }
@@ -2745,6 +2809,418 @@ async function saveToSupabase() {
     saveBtn.disabled = false;
     saveBtn.textContent = originalText;
     saveBtn.style.opacity = '1';
+  }
+}
+
+// ========== V2 저장 (ft_orders + ft_order_items) ==========
+async function saveToSupabaseV2() {
+  const saveBtn = document.getElementById('btnSaveV2');
+  const originalText = saveBtn ? saveBtn.textContent : 'V2 저장';
+
+  if (!supabaseClient) {
+    alert('Supabase 연결이 초기화되지 않았습니다.');
+    return;
+  }
+
+  if (orders.length === 0) {
+    alert('저장할 주문 데이터가 없습니다.');
+    return;
+  }
+
+  // ft_users 드롭박스에서 유저 정보 가져오기
+  const ftUserSelect = document.getElementById('ftUserSelect');
+  if (!ftUserSelect || !ftUserSelect.value) {
+    alert('유저를 선택해주세요.');
+    return;
+  }
+
+  const ftUserId = ftUserSelect.value;
+  const ftUserOption = ftUserSelect.options[ftUserSelect.selectedIndex];
+  const ftFullName = ftUserOption.dataset.fullName || '';
+  const ftPhone = ftUserOption.dataset.phone || '';
+  const ftAddress = ftUserOption.dataset.address || '';
+
+  // 대표 주문코드
+  const orderCode = orders[0].orderCode || (orders[0].dbData && orders[0].dbData.order_code) || '';
+  if (!orderCode) {
+    alert('주문코드(order_code)를 찾을 수 없습니다.');
+    return;
+  }
+
+  // 총 수량 계산
+  const totalQty = orders.reduce((sum, order) => sum + (order.quantity || 0), 0);
+
+  // 버튼 로딩 상태
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'V2 저장 중...';
+    saveBtn.style.opacity = '0.7';
+  }
+
+  console.log('=== V2 저장 시작 ===');
+
+  try {
+    // ── Step 1: ft_orders INSERT ──
+    const ftOrderData = {
+      order_no: orderCode,
+      user_id: ftUserId,
+      recipient_name: ftFullName,
+      recipient_phone: ftPhone,
+      recipient_address: ftAddress,
+      status: 'PROCESSING',
+      total_qty: totalQty
+    };
+
+    console.log('ft_orders 저장 데이터:', ftOrderData);
+
+    const { data: orderData, error: orderError } = await supabaseClient
+      .from('ft_orders')
+      .insert([ftOrderData])
+      .select();
+
+    if (orderError) {
+      console.error('ft_orders 저장 오류:', orderError);
+      alert(`ft_orders 저장 실패: ${orderError.message}`);
+      return;
+    }
+
+    if (!orderData || orderData.length === 0) {
+      alert('ft_orders 저장 실패: 데이터가 반환되지 않았습니다.');
+      return;
+    }
+
+    const ftOrderId = orderData[0].id;
+    console.log('✓ ft_orders 저장 완료 (ID:', ftOrderId, ')');
+
+    // ── Step 2: ft_order_items INSERT ──
+    if (saveBtn) saveBtn.textContent = '아이템 저장 중...';
+
+    const itemsToInsert = orders.map((order, index) => {
+      const db = order.dbData || {};
+      return {
+        order_id: ftOrderId,
+        order_no: db.order_code || orderCode,
+        item_seq: index + 1,
+        item_name: db.item_name || null,
+        option_name: db.option_name || null,
+        order_qty: db.order_qty || null,
+        barcode: db.barcode || null,
+        china_option1: db.china_option1 || null,
+        china_option2: db.china_option2 || null,
+        price_cny: db.china_price || null,
+        price_total_cny: db.china_total_price || null,
+        img_url: db.img_url || null,
+        site_url: db.site_url || null,
+        note_kr: db.korea_note || null,
+        note_cn: db.china_note || null,
+        composition: db.composition || null,
+        recommanded_age: db.recomanded_age || null,
+        set_total: db.set_total || null,
+        set_seq: db.set_seq || null,
+        coupang_shipment_size: db.coupang_shipment_size || null,
+        item_no: db.order_number || null,
+        '1688_offer_id': db['1688_offer_id'] || null,
+        '1688_order_id': db['1688_order_id'] || null,
+        user_id: ftUserId,
+        status: 'PROCESSING'
+      };
+    });
+
+    console.log(`ft_order_items 저장: ${itemsToInsert.length}개`);
+
+    const { data: itemsData, error: itemsError } = await supabaseClient
+      .from('ft_order_items')
+      .insert(itemsToInsert)
+      .select();
+
+    if (itemsError) {
+      console.error('ft_order_items 저장 오류:', itemsError);
+      alert(`ft_order_items 저장 실패: ${itemsError.message}\n\nft_orders는 저장됨 (ID: ${ftOrderId})`);
+      return;
+    }
+
+    // ── Step 3: 저장 검증 ──
+    if (saveBtn) saveBtn.textContent = '검증 중...';
+
+    const { data: verifyItems, error: verifyError } = await supabaseClient
+      .from('ft_order_items')
+      .select('id')
+      .eq('order_id', ftOrderId);
+
+    if (verifyError) {
+      console.error('검증 오류:', verifyError);
+      alert(`저장은 완료되었으나 검증 중 오류: ${verifyError.message}`);
+      return;
+    }
+
+    const savedItemCount = verifyItems ? verifyItems.length : 0;
+    console.log(`✓ V2 저장 검증 완료: ft_orders 1건, ft_order_items ${savedItemCount}건`);
+
+    alert(`V2 저장 완료!\n\n주문코드: ${orderCode}\nft_orders ID: ${ftOrderId}\nft_order_items: ${savedItemCount}건 저장\n총 수량: ${totalQty}`);
+
+    isDataSaved = true;
+    stepStatus.save = true;
+    updateButtonSteps();
+
+  } catch (error) {
+    console.error('V2 저장 예외:', error);
+    alert('V2 저장 중 오류: ' + error.message);
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = originalText;
+      saveBtn.style.opacity = '1';
+    }
+  }
+}
+
+// ========== V2 차감 (ft_orders UPSERT) ==========
+function deductStockV2() {
+  if (orders.length === 0) {
+    alert('먼저 주문 데이터를 정리해주세요.');
+    return;
+  }
+
+  // 파일 입력 요소 생성
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.xlsx,.xls';
+  fileInput.style.display = 'none';
+
+  fileInput.addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    try {
+      await processDeductExcelV2(file);
+    } catch (error) {
+      console.error('V2 차감 엑셀 처리 오류:', error);
+      alert('엑셀 파일 처리 중 오류: ' + error.message);
+    }
+  });
+
+  document.body.appendChild(fileInput);
+  fileInput.click();
+  document.body.removeChild(fileInput);
+}
+
+// V2 차감 엑셀 처리 → ft_orders UPSERT
+async function processDeductExcelV2(file) {
+  const btnDeductV2 = document.getElementById('btnDeductV2');
+  const originalText = btnDeductV2 ? btnDeductV2.textContent : 'V2 차감';
+
+  if (btnDeductV2) {
+    btnDeductV2.disabled = true;
+    btnDeductV2.textContent = '처리 중...';
+  }
+
+  try {
+    const data = await file.arrayBuffer();
+    const workbook = XLSX.read(data, { type: 'array' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+
+    const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+      header: 1,
+      defval: '',
+      blankrows: false
+    });
+
+    if (jsonData.length < 2) {
+      alert('엑셀 파일에 데이터가 없습니다.');
+      return;
+    }
+
+    // 병합 셀 정보
+    const merges = worksheet['!merges'] || [];
+    const AD_COL = 29;
+    const G_COL = 6;
+    const I_COL = 8;
+    const U_COL = 20;
+
+    // ── 주문코드 검증 (기존 로직 동일) ──
+    const currentOrderCodes = new Set();
+    orders.forEach(order => {
+      if (order.orderCode) currentOrderCodes.add(order.orderCode);
+      else if (order.dbData && order.dbData.order_code) currentOrderCodes.add(order.dbData.order_code);
+    });
+
+    if (currentOrderCodes.size === 0) {
+      alert('현재 주문 데이터에 주문코드(S열)가 없습니다.');
+      return;
+    }
+
+    // 병합 셀 헬퍼 함수
+    function getMergedValue(rowIdx, colIdx, data, merges) {
+      if (data[rowIdx] && data[rowIdx][colIdx] !== undefined && data[rowIdx][colIdx] !== '') {
+        return data[rowIdx][colIdx];
+      }
+      for (const merge of merges) {
+        if (rowIdx >= merge.s.r && rowIdx <= merge.e.r &&
+            colIdx >= merge.s.c && colIdx <= merge.e.c) {
+          if (data[merge.s.r] && data[merge.s.r][merge.s.c] !== undefined) {
+            return data[merge.s.r][merge.s.c];
+          }
+        }
+      }
+      return '';
+    }
+
+    function isFirstRowOfMerge(rowIdx, colIdx, merges) {
+      for (const merge of merges) {
+        if (rowIdx >= merge.s.r && rowIdx <= merge.e.r &&
+            colIdx >= merge.s.c && colIdx <= merge.e.c) {
+          return rowIdx === merge.s.r;
+        }
+      }
+      return true;
+    }
+
+    // AD열 주문코드 추출 및 검증
+    const excelOrderCodes = new Set();
+    const mismatchedCodes = [];
+
+    for (let i = 1; i < jsonData.length; i++) {
+      const adValue = getMergedValue(i, AD_COL, jsonData, merges);
+      if (adValue && adValue.toString().trim()) {
+        const parts = adValue.toString().split('|');
+        const orderCode = parts[0].trim();
+        if (orderCode) {
+          excelOrderCodes.add(orderCode);
+          if (!currentOrderCodes.has(orderCode)) {
+            mismatchedCodes.push(orderCode);
+          }
+        }
+      }
+    }
+
+    if (mismatchedCodes.length > 0) {
+      alert(`엑셀 파일을 확인해주세요.\n다른 주문코드(AD열)가 확인됩니다.\n\n불일치 코드: ${mismatchedCodes.join(', ')}`);
+      return;
+    }
+
+    if (excelOrderCodes.size === 0) {
+      alert('엑셀 파일의 AD열에서 주문코드를 찾을 수 없습니다.');
+      return;
+    }
+
+    // ── G열, I열, U열 합계 계산 (병합 셀 고려) ──
+    let delivery_fee = 0;
+    let total_I = 0;
+    let item_qty = 0;
+
+    for (let i = 1; i < jsonData.length; i++) {
+      if (isFirstRowOfMerge(i, G_COL, merges)) {
+        const gValue = getMergedValue(i, G_COL, jsonData, merges);
+        delivery_fee += parseFloat(String(gValue).replace(/,/g, '')) || 0;
+      }
+      if (isFirstRowOfMerge(i, I_COL, merges)) {
+        const iValue = getMergedValue(i, I_COL, jsonData, merges);
+        total_I += parseFloat(String(iValue).replace(/,/g, '')) || 0;
+      }
+      const uValue = jsonData[i] && jsonData[i][U_COL];
+      item_qty += parseInt(String(uValue).replace(/,/g, '')) || 0;
+    }
+
+    // 계산 (소수점 2자리) - 기존 차감과 동일한 로직
+    // delivery_fee = G열 합계 (배송비)
+    // total_item_price = I열 - G열 (상품가)
+    // service_fee = total_item_price * 0.06 (수수료 6%)
+    // total_amount = total_item_price + service_fee + delivery_fee + extra_fee
+    delivery_fee = Math.round(delivery_fee * 100) / 100;
+    const total_item_price = Math.round((total_I - delivery_fee) * 100) / 100;
+    const service_fee = Math.round(total_item_price * 0.06 * 100) / 100;
+    const total_amount = Math.round((total_item_price + service_fee + delivery_fee) * 100) / 100;
+
+    console.log('=== V2 차감 계산 결과 ===');
+    console.log('delivery_fee (G열 배송비):', delivery_fee);
+    console.log('total_item_price (I-G 상품가):', total_item_price);
+    console.log('service_fee (6%):', service_fee);
+    console.log('total_amount (합계):', total_amount);
+
+    // ── ft_orders UPSERT (order_no 기준) ──
+    const orderCode = Array.from(excelOrderCodes)[0];
+
+    if (!supabaseClient) {
+      alert('Supabase 연결이 초기화되지 않았습니다.');
+      return;
+    }
+
+    // order_no로 기존 레코드 조회
+    const { data: existingOrder, error: findError } = await supabaseClient
+      .from('ft_orders')
+      .select('id')
+      .eq('order_no', orderCode)
+      .maybeSingle();
+
+    if (findError) {
+      console.error('ft_orders 조회 오류:', findError);
+      alert(`ft_orders 조회 실패: ${findError.message}`);
+      return;
+    }
+
+    if (!existingOrder) {
+      alert(`ft_orders에 주문코드(${orderCode})가 없습니다.\n먼저 V2 저장을 진행해주세요.`);
+      return;
+    }
+
+    // UPDATE (가격 정보만 업데이트)
+    const updateData = {
+      delivery_fee: delivery_fee,
+      total_item_price: total_item_price,
+      service_fee: service_fee,
+      total_amount: total_amount
+    };
+
+    console.log('ft_orders UPDATE 데이터:', updateData);
+
+    const { data: updatedOrder, error: updateError } = await supabaseClient
+      .from('ft_orders')
+      .update(updateData)
+      .eq('id', existingOrder.id)
+      .select();
+
+    if (updateError) {
+      console.error('ft_orders 업데이트 오류:', updateError);
+      alert(`ft_orders 업데이트 실패: ${updateError.message}`);
+      return;
+    }
+
+    // 검증
+    const { data: verifyData, error: verifyError } = await supabaseClient
+      .from('ft_orders')
+      .select('delivery_fee, total_item_price, service_fee, total_amount')
+      .eq('id', existingOrder.id)
+      .single();
+
+    if (verifyError || !verifyData) {
+      alert('V2 차감 검증 실패');
+      return;
+    }
+
+    const isValid =
+      parseFloat(verifyData.delivery_fee) === delivery_fee &&
+      parseFloat(verifyData.total_item_price) === total_item_price &&
+      parseFloat(verifyData.service_fee) === service_fee &&
+      parseFloat(verifyData.total_amount) === total_amount;
+
+    if (!isValid) {
+      console.error('데이터 불일치:', { saved: verifyData, expected: { delivery_fee, total_item_price, service_fee, total_amount } });
+      alert('V2 차감 검증 실패: 저장된 데이터가 일치하지 않습니다.');
+      return;
+    }
+
+    console.log('✓ V2 차감 저장 및 검증 완료');
+    alert(`V2 차감 완료!\n\n주문코드: ${orderCode}\n배송비: ${delivery_fee.toLocaleString()}원\n상품가: ${total_item_price.toLocaleString()}원\n수수료: ${service_fee.toLocaleString()}원\n총액: ${total_amount.toLocaleString()}원\n\n✓ ft_orders 업데이트 확인됨`);
+
+    stepStatus.deduct = true;
+    updateButtonSteps();
+
+  } finally {
+    if (btnDeductV2) {
+      btnDeductV2.disabled = false;
+      btnDeductV2.textContent = originalText;
+    }
   }
 }
 

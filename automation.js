@@ -1351,23 +1351,27 @@ function checkSizeMatch(cartSize, orderSize) {
 
 // 색상 매칭 체크 함수 (검수용 엄격한 색상 매칭)
 function checkColorMatch(cartColor, orderColor) {
+  // 공백 정규화 (연속 공백 → 단일 공백, 양쪽 공백 제거)
+  const normalizedCart = (cartColor || '').replace(/\s+/g, ' ').trim();
+  const normalizedOrder = (orderColor || '').replace(/\s+/g, ' ').trim();
+
   // 둘 다 비어있는 경우 - 매칭 성공
-  if (!cartColor && !orderColor) {
+  if (!normalizedCart && !normalizedOrder) {
     return { match: true, type: 'no-color' };
   }
 
   // 하나만 비어있는 경우 - 불일치
-  if (!cartColor || !orderColor) {
+  if (!normalizedCart || !normalizedOrder) {
     return { match: false, type: 'not-found', cartValue: cartColor || '' };
   }
 
-  // 1. 정확히 일치
-  if (cartColor === orderColor) {
+  // 1. 정확히 일치 (공백 정규화 후)
+  if (normalizedCart === normalizedOrder) {
     return { match: true, type: 'exact' };
   }
 
   // 2. 부분 일치 - 불허용 (불일치로 표시, 카트 값 알려줌)
-  if (cartColor.includes(orderColor) || orderColor.includes(cartColor)) {
+  if (normalizedCart.includes(normalizedOrder) || normalizedOrder.includes(normalizedCart)) {
     return { match: false, type: 'partial', cartValue: cartColor };
   }
 
@@ -1777,27 +1781,33 @@ async function inputRefCodes(groupedData) {
           const isFreeSize = (s) => freeSizeAliases.some(alias => s.toUpperCase().includes(alias.toUpperCase()));
 
           // 매칭되는 아이템 찾기 (부분 매칭 허용)
-          const matchingItems = groupInfo.items.filter(item => {
-            // 색상은 정확히 일치
-            const colorMatch = item.color === color;
+          // 공백 정규화 (연속 공백 → 단일 공백)
+          const normalizedColor = color.replace(/\s+/g, ' ').trim();
 
-            // 사이즈 매칭: 프리사이즈 동의어 처리 + 부분 매칭
+          const matchingItems = groupInfo.items.filter(item => {
+            // 색상은 정확히 일치 (공백 정규화 적용)
+            const normalizedItemColor = (item.color || '').replace(/\s+/g, ' ').trim();
+            const colorMatch = normalizedItemColor === normalizedColor;
+
+            // 사이즈 매칭: 프리사이즈 동의어 처리 + 부분 매칭 (공백 정규화 적용)
             let sizeMatch = false;
-            const itemIsFree = isFreeSize(item.size);
-            const cargoIsFree = isFreeSize(size);
+            const normalizedItemSize = (item.size || '').replace(/\s+/g, ' ').trim();
+            const normalizedSize = size.replace(/\s+/g, ' ').trim();
+            const itemIsFree = isFreeSize(normalizedItemSize);
+            const cargoIsFree = isFreeSize(normalizedSize);
 
             if (itemIsFree && cargoIsFree) {
               // 둘 다 프리사이즈면 매칭
               sizeMatch = true;
-            } else if (size.includes(item.size) || item.size.includes(size)) {
+            } else if (normalizedSize.includes(normalizedItemSize) || normalizedItemSize.includes(normalizedSize)) {
               // 부분 매칭 (예: "L"이 "L适合120-140斤"에 포함되는지)
               sizeMatch = true;
-            } else if (item.size === size) {
+            } else if (normalizedItemSize === normalizedSize) {
               // 정확히 일치
               sizeMatch = true;
             }
 
-            console.log(`        Comparing Item(${item.color}|${item.size}) vs Cargo(${color}|${size}) = ${colorMatch && sizeMatch}`);
+            console.log(`        Comparing Item(${normalizedItemColor}|${normalizedItemSize}) vs Cargo(${normalizedColor}|${normalizedSize}) = ${colorMatch && sizeMatch}`);
             return colorMatch && sizeMatch;
           });
 
