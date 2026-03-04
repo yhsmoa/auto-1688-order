@@ -701,6 +701,31 @@ function executePendingAction() {
   pendingAction = null;
 }
 
+// ============================================================
+// [URL 처리] URL 정리 + offer_id 추출 헬퍼 (parseData / 링크수정 공용)
+// ============================================================
+
+/**
+ * 원본 URL을 정리하고 offer_id를 추출한다.
+ * @param {string} rawUrl
+ * @returns {{ cleanedUrl: string, offerId: string|null }}
+ */
+function processUrl(rawUrl) {
+  let cleanedUrl = (rawUrl || '').trim();
+
+  // 1688 상세 URL이면 offer/{id}.html 까지만 추출
+  if (cleanedUrl.startsWith('https://detail.1688.com')) {
+    const match = cleanedUrl.match(/https:\/\/detail\.1688\.com\/offer\/\d+\.html/);
+    if (match) cleanedUrl = match[0] + '?';
+  }
+
+  // offer_id 추출
+  const offerIdMatch = cleanedUrl.match(/offer\/(\d+)\.html/);
+  const offerId = offerIdMatch ? offerIdMatch[1] : null;
+
+  return { cleanedUrl, offerId };
+}
+
 // 데이터 파싱
 function parseData() {
   console.log('parseData 함수 호출됨');
@@ -714,79 +739,108 @@ function parseData() {
   const lines = input.split('\n').filter(line => line.trim());
   orders = [];
 
-  for (const line of lines) {
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
     // 탭으로 구분 (구글 시트에서 복사하면 탭으로 구분됨)
     const parts = line.split('\t');
 
     // 최소 12개 컬럼 필요 (A~L까지)
-    if (parts.length >= 12) {
-      const orderNo = parts[1].trim();    // B열: 주문번호
-      const quantity = parseInt(parts[4]) || 1;  // E열: 수량
-      const color = parts[6].trim();      // G열: 색상옵션 (china_option1)
-      const size = parts[7].trim();       // H열: 사이즈옵션 (china_option2)
-      let url = parts[11].trim();         // L열: site_url
-
-      // URL 정리: https://detail.1688.com으로 시작하면 offer/{id}.html까지만 추출
-      if (url.startsWith('https://detail.1688.com')) {
-        const match = url.match(/https:\/\/detail\.1688\.com\/offer\/\d+\.html/);
-        if (match) {
-          url = match[0] + '?';
-        }
-      }
-
-      // offer_id 추출
-      const offerIdMatch = url.match(/offer\/(\d+)\.html/);
-      const offerId = offerIdMatch ? offerIdMatch[1] : null;
-
-      if (orderNo && color && size && url) {
-        orders.push({
-          // 화면 표시용 (기존 필드 유지)
-          orderNo,          // B열
-          quantity,         // E열
-          color,            // G열
-          size,             // H열
-          url,              // L열
-          orderCode: parts[18] ? parts[18].trim() : '',  // S열
-          status: 'pending',
-          errorReason: '',
-
-          // Supabase 저장용 전체 데이터
-          dbData: {
-            date: new Date().toISOString(),                             // 현재 시간 자동 입력
-            order_number: parts[1] ? parts[1].trim() : null,            // B열
-            item_name: parts[2] ? parts[2].trim() : null,               // C열
-            option_name: parts[3] ? parts[3].trim() : null,             // D열
-            order_qty: parseInt(parts[4]) || null,                      // E열
-            barcode: parts[5] ? parts[5].trim() : null,                 // F열
-            china_option1: parts[6] ? parts[6].trim() : null,           // G열 (색상)
-            china_option2: parts[7] ? parts[7].trim() : null,           // H열 (사이즈)
-            china_price: parts[8] ? parseFloat(parseFloat(parts[8]).toFixed(2)) : null,        // I열
-            china_total_price: parts[9] ? parseFloat(parseFloat(parts[9]).toFixed(2)) : null,  // J열
-            img_url: parts[10] ? parts[10].trim() : null,               // K열
-            site_url: parts[11] ? parts[11].trim() : null,              // L열
-            status_ordering: parts[12] ? parseInt(parts[12]) : null,    // M열
-            status_import: parts[13] ? parseInt(parts[13]) : null,      // N열
-            status_cancel: parts[14] ? parseInt(parts[14]) : null,      // O열
-            status_export: parts[15] ? parseInt(parts[15]) : null,      // P열
-            korea_note: parts[16] ? parts[16].trim() : null,            // Q열
-            china_note: parts[17] ? parts[17].trim() : null,            // R열
-            order_code: parts[18] ? parts[18].trim() : null,            // S열
-            shipment_code: parts[19] ? parts[19].trim() : null,         // T열
-            option_id: parts[20] ? parts[20].trim() : null,             // U열
-            coupang_shipment_size: parts[21] ? parts[21].trim() : null, // V열
-            composition: parts[22] ? parts[22].trim() : null,           // W열
-            recomanded_age: parts[23] ? parts[23].trim() : null,        // X열
-            set_total: parts[24] ? parseInt(parts[24]) : null,          // Y열
-            set_seq: parts[25] ? parseInt(parts[25]) : null,            // Z열
-            '1688_offer_id': offerId,                                   // URL에서 추출
-            '1688_order_id': null                                       // 나중에 매칭 시 추가
-          },
-
-          // 원본 구글 시트 데이터 전체 저장 (기존 로직 호환)
-          originalData: parts
-        });
-      }
+    if (parts.length < 12) {
+      // 컬럼 부족 → 무효 행으로 추가 (테이블·미리보기에 빨간색 표시)
+      orders.push({
+        orderNo: '주문 데이터를 확인해주세요',
+        quantity: 0, color: '', size: '', url: '',
+        orderCode: '', status: 'pending', errorReason: '',
+        isInvalid: true,
+        invalidReason: `컬럼 부족 (${parts.length}개 / 최소 12개)`,
+        dbData: {}, originalData: parts
+      });
+      continue;
     }
+
+    const orderNo = parts[1].trim();    // B열: 주문번호
+    const quantity = parseInt(parts[4]) || 1;  // E열: 수량
+    const color = parts[6].trim();      // G열: 색상옵션 (china_option1)
+    const size = parts[7].trim();       // H열: 사이즈옵션 (china_option2)
+    // L열: site_url — URL 정리 + offer_id 추출 (processUrl 공용 함수)
+    const { cleanedUrl: url, offerId } = processUrl(parts[11].trim());
+
+    // 필수 필드 누락 → 무효 행으로 추가
+    if (!orderNo || !color || !size || !url) {
+      const missing = [];
+      if (!orderNo) missing.push('주문번호(B)');
+      if (!color)   missing.push('색상(G)');
+      if (!size)    missing.push('사이즈(H)');
+      if (!url)     missing.push('URL(L)');
+      orders.push({
+        orderNo: '주문 데이터를 확인해주세요',
+        quantity, color, size, url,
+        orderCode: parts[18] ? parts[18].trim() : '',
+        status: 'pending', errorReason: '',
+        isInvalid: true,
+        invalidReason: `누락: ${missing.join(', ')}`,
+        dbData: {
+          order_number: parts[1] ? parts[1].trim() : null,
+          item_name: parts[2] ? parts[2].trim() : null,
+          option_name: parts[3] ? parts[3].trim() : null,
+          order_qty: parseInt(parts[4]) || null,
+          barcode: parts[5] ? parts[5].trim() : null,
+          china_option1: parts[6] ? parts[6].trim() : null,
+          china_option2: parts[7] ? parts[7].trim() : null,
+          site_url: parts[11] ? parts[11].trim() : null,
+        },
+        originalData: parts
+      });
+      continue;
+    }
+
+    // 정상 행
+    orders.push({
+      // 화면 표시용 (기존 필드 유지)
+      orderNo,          // B열
+      quantity,         // E열
+      color,            // G열
+      size,             // H열
+      url,              // L열
+      orderCode: parts[18] ? parts[18].trim() : '',  // S열
+      status: 'pending',
+      errorReason: '',
+
+      // Supabase 저장용 전체 데이터
+      dbData: {
+        date: new Date().toISOString(),                             // 현재 시간 자동 입력
+        order_number: parts[1] ? parts[1].trim() : null,            // B열
+        item_name: parts[2] ? parts[2].trim() : null,               // C열
+        option_name: parts[3] ? parts[3].trim() : null,             // D열
+        order_qty: parseInt(parts[4]) || null,                      // E열
+        barcode: parts[5] ? parts[5].trim() : null,                 // F열
+        china_option1: parts[6] ? parts[6].trim() : null,           // G열 (색상)
+        china_option2: parts[7] ? parts[7].trim() : null,           // H열 (사이즈)
+        china_price: parts[8] ? parseFloat(parseFloat(parts[8]).toFixed(2)) : null,        // I열
+        china_total_price: parts[9] ? parseFloat(parseFloat(parts[9]).toFixed(2)) : null,  // J열
+        img_url: parts[10] ? parts[10].trim() : null,               // K열
+        site_url: parts[11] ? parts[11].trim() : null,              // L열
+        status_ordering: parts[12] ? parseInt(parts[12]) : null,    // M열
+        status_import: parts[13] ? parseInt(parts[13]) : null,      // N열
+        status_cancel: parts[14] ? parseInt(parts[14]) : null,      // O열
+        status_export: parts[15] ? parseInt(parts[15]) : null,      // P열
+        korea_note: parts[16] ? parts[16].trim() : null,            // Q열
+        china_note: parts[17] ? parts[17].trim() : null,            // R열
+        order_code: parts[18] ? parts[18].trim() : null,            // S열
+        shipment_code: parts[19] ? parts[19].trim() : null,         // T열
+        option_id: parts[20] ? parts[20].trim() : null,             // U열
+        coupang_shipment_size: parts[21] ? parts[21].trim() : null, // V열
+        composition: parts[22] ? parts[22].trim() : null,           // W열
+        recomanded_age: parts[23] ? parts[23].trim() : null,        // X열
+        set_total: parts[24] ? parseInt(parts[24]) : null,          // Y열
+        set_seq: parts[25] ? parseInt(parts[25]) : null,            // Z열
+        '1688_offer_id': offerId,                                   // URL에서 추출
+        '1688_order_id': null                                       // 나중에 매칭 시 추가
+      },
+
+      // 원본 구글 시트 데이터 전체 저장 (기존 로직 호환)
+      originalData: parts
+    });
   }
 
   if (orders.length === 0) {
@@ -847,6 +901,39 @@ const supabaseColumnIndex = Object.entries(supabaseColumnMap).reduce((acc, [idx,
   return acc;
 }, {});
 
+// ============================================================
+// [데이터 미리보기 복사] 수정된 현재 값으로 TSV 생성 → 클립보드
+// ============================================================
+function copyPreviewData() {
+  if (orders.length === 0) { alert('복사할 데이터가 없습니다.'); return; }
+
+  let maxCols = 26;
+  orders.forEach(order => {
+    if (order.originalData && order.originalData.length > maxCols)
+      maxCols = order.originalData.length;
+  });
+
+  const rows = orders.map(order => {
+    const original = order.originalData || [];
+    const dbData   = order.dbData || {};
+    const cols = [];
+    for (let i = 0; i < maxCols; i++) {
+      const colName     = supabaseColumnMap[i];
+      const originalVal = original[i] !== undefined ? String(original[i]).trim() : '';
+      let val = '';
+      if (colName && colName !== '-' && dbData[colName] !== undefined && dbData[colName] !== null) {
+        val = String(dbData[colName]);
+      } else {
+        val = originalVal;
+      }
+      cols.push(val);
+    }
+    return cols.join('\t');
+  });
+
+  copyToClipboard(rows.join('\n'));
+}
+
 // 데이터 미리보기 렌더링 (Supabase에 저장될 데이터 기준)
 function renderDataPreview() {
   const previewDiv = document.getElementById('dataPreview');
@@ -898,8 +985,12 @@ function renderDataPreview() {
   html += '</tr>';
   html += '</thead><tbody>';
 
+  // 무효 행이 있으면 무효 행만, 없으면 전체 표시
+  const hasInvalid = orders.some(o => o.isInvalid);
+  const previewOrders = hasInvalid ? orders.filter(o => o.isInvalid) : orders;
+
   // 각 주문 데이터 렌더링
-  orders.forEach((order, rowIdx) => {
+  previewOrders.forEach((order, rowIdx) => {
     const original = order.originalData || [];
     const dbData = order.dbData || {};
 
@@ -922,7 +1013,7 @@ function renderDataPreview() {
       }
     }
 
-    const rowBgStyle = isFailed ? 'background-color: #ffcccc;' : '';
+    const rowBgStyle = (order.isInvalid || isFailed) ? 'background-color: #ffcccc;' : '';
     html += `<tr style="${rowBgStyle}"><td style="${rowBgStyle}">${rowIdx + 1}</td>`;
 
     for (let i = 0; i < maxCols; i++) {
@@ -996,7 +1087,7 @@ function renderOrderList() {
         <tr>
           <th style="width: 30px; text-align: center;"><input type="checkbox" onclick="toggleAllCheckboxes(this)"></th>
           <th style="width: 45px; text-align: center;">#</th>
-          <th style="width: 135px;">주문번호</th>
+          <th style="width: 220px;">주문번호</th>
           <th style="width: 160px;">색상</th>
           <th style="width: 160px;">사이즈</th>
           <th style="width: 45px; text-align: center;">수량</th>
@@ -1114,23 +1205,63 @@ function renderOrderList() {
       refHtml = '<span class="status-error">❌</span>';
     }
 
-    // 주문번호 셀 내용 구성 (검수 후 판매자명 추가)
-    let orderNoCellContent = '';
-    if (order.reviewResult && order.reviewResult.cartItem && order.reviewResult.cartItem.sellerName) {
-      const sellerName = order.reviewResult.cartItem.sellerName;
-      orderNoCellContent = `
-        <div onclick="copyToClipboard('${order.url.replace(/'/g, "\\'")}')" title="클릭하여 URL 복사" style="cursor: pointer;">
+    // 주문번호 셀 내용 구성
+    const offerId    = (order.dbData?.['1688_offer_id']) || '';
+    const barcode    = (order.dbData?.barcode) || '';
+    const sellerName = order.reviewResult?.cartItem?.sellerName || '';
+    const itemName   = order.dbData?.item_name || '';
+    const optionName = order.dbData?.option_name || '';
+    const imgUrl     = order.dbData?.img_url || '';
+
+    const escapedUrl    = order.url.replace(/'/g, "\\'");
+    const escapedSeller = sellerName.replace(/'/g, "\\'");
+    const escapedImg    = imgUrl.replace(/'/g, "\\'");
+
+    const itemLabel = itemName + (optionName ? ', ' + optionName : '');
+
+    // SET 상품 판별: 주문번호 4번째 파트(index 3)가 'S'로 시작
+    const orderNoSplit = (order.orderNo || '').split('-');
+    const isSet = orderNoSplit.length >= 4 && orderNoSplit[3].toUpperCase().startsWith('S');
+
+    let orderNoCellContent = `
+      ${(itemLabel || isSet) ? `
+      <div class="cell-item-label" title="${itemLabel.replace(/"/g, '&quot;')}">
+        ${isSet ? '<span class="set-badge">SET</span> ' : ''}${itemLabel}
+      </div>` : ''}
+      <div style="display:flex; align-items:center; gap:4px;">
+        <span class="cell-clickable"
+              onclick="copyToClipboard('${escapedUrl}')"
+              title="클릭하여 URL 복사">
           ${order.orderNo}
-        </div>
-        <div onclick="event.stopPropagation(); copyToClipboard('${sellerName.replace(/'/g, "\\'")}'); event.target.style.backgroundColor='#ffffcc'; setTimeout(() => event.target.style.backgroundColor='', 200);"
-             title="클릭하여 판매자명 복사"
-             style="font-size: 0.85em; color: #666; cursor: pointer; margin-top: 2px;">
-          ${sellerName}
-        </div>
-      `;
-    } else {
-      orderNoCellContent = `<div onclick="copyToClipboard('${order.url.replace(/'/g, "\\'")}')" title="클릭하여 URL 복사" style="cursor: pointer;">${order.orderNo}</div>`;
-    }
+        </span>
+        ${imgUrl ? `
+        <button class="cell-img-btn"
+                onclick="event.stopPropagation(); openImgModal('${escapedImg}');"
+                title="이미지 보기">🖼️</button>` : ''}
+      </div>
+      <div style="display:flex; align-items:center; gap:4px; margin-top:3px; flex-wrap:wrap;">
+        <span class="cell-clickable"
+              onclick="searchByValue('${offerId}')"
+              title="offer_id로 검색"
+              style="color:#222;">
+          ${offerId || '-'}
+        </span>
+        <span style="color:#ccc; user-select:none;">|</span>
+        <span class="cell-clickable"
+              onclick="searchByValue('${barcode}')"
+              title="바코드로 검색"
+              style="color:#222;">
+          ${barcode || '-'}
+        </span>
+      </div>
+      ${sellerName ? `
+      <div class="cell-clickable cell-seller"
+           onclick="event.stopPropagation(); copyToClipboard('${escapedSeller}');"
+           title="클릭하여 판매자명 복사"
+           style="color:#555; margin-top:3px;">
+        ${sellerName}
+      </div>` : ''}
+    `;
 
     // 실패 여부 판단 (exportFailedOrders와 동일한 로직)
     let isFailed = false;
@@ -1151,11 +1282,16 @@ function renderOrderList() {
       }
     }
 
-    // 실패 건은 주황색 배경
-    const rowStyle = isFailed ? ' style="background-color: #ffcc99;"' : '';
+    // 무효 행은 테이블에 표시하지 않음 (데이터 미리보기에서만 표시)
+    if (order.isInvalid) return;
+
+    // 실패 건은 주황색 배경 + row-orange 클래스 (네비게이션 쿼리용)
+    const trAttrs = isFailed
+      ? ' class="row-orange" style="background-color: #ffcc99;"'
+      : '';
 
     html += `
-      <tr${rowStyle}>
+      <tr data-index="${index}"${trAttrs}>
         <td class="checkbox-cell" style="text-align: center;" onclick="toggleRowCheckbox(${index}, event)"><input type="checkbox" class="row-checkbox" data-index="${index}" ${order.checked ? 'checked' : ''}></td>
         <td style="text-align: center;">${index + 1}</td>
         <td class="order-no-cell">${orderNoCellContent}</td>
@@ -1205,6 +1341,51 @@ function renderOrderList() {
 
   // 데이터 미리보기 갱신
   renderDataPreview();
+
+  // 정렬 상태 재적용 (옵션기준 정렬 중이었으면 유지)
+  if (currentSortMode !== 'default') {
+    sortOrderTable(currentSortMode);
+  }
+
+  // 검색 필터 재적용 (두 검색창 상태 유지)
+  applyTableFilter();
+}
+
+// ============================================================
+// [주황색 행 네비게이션] 확인 필요 항목(실패 행) 간 키보드 없이 이동
+// ============================================================
+let orangeNavCurrentIndex = -1; // 현재 포커스된 주황 행 인덱스
+
+/** renderOrderList / applyTableFilter 완료 후 호출 — 패널 표시·숨김 및 카운트 초기화 */
+function updateOrangeNav() {
+  const panel = document.getElementById('orangeNavPanel');
+  if (!panel) return;
+  // 검색 필터로 숨겨진 행은 제외
+  const orangeRows = document.querySelectorAll('tr.row-orange:not(.search-hidden)');
+  if (orangeRows.length === 0) {
+    panel.style.display  = 'none';
+    orangeNavCurrentIndex = -1;
+    return;
+  }
+  panel.style.display = 'flex';
+  // 렌더링 후 인덱스 리셋 (현재 위치 무효화)
+  orangeNavCurrentIndex = -1;
+  document.getElementById('orangeNavCount').textContent = `0 / ${orangeRows.length}`;
+}
+
+/** ▲(-1) / ▼(+1) 클릭 → 이전/다음 가시 주황 행으로 부드럽게 스크롤 */
+function navigateOrangeRows(direction) {
+  const orangeRows = Array.from(
+    document.querySelectorAll('tr.row-orange:not(.search-hidden)')
+  );
+  if (orangeRows.length === 0) return;
+
+  orangeNavCurrentIndex =
+    (orangeNavCurrentIndex + direction + orangeRows.length) % orangeRows.length;
+
+  orangeRows[orangeNavCurrentIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  document.getElementById('orangeNavCount').textContent =
+    `${orangeNavCurrentIndex + 1} / ${orangeRows.length}`;
 }
 
 // 주문 진행
@@ -1857,7 +2038,149 @@ document.addEventListener('DOMContentLoaded', () => {
       selectReason(customInput.value.trim(), true);
     }
   });
+
+  // ── 링크 수정 모달 이벤트 ──
+  const linkModal = document.getElementById('linkEditModal');
+  const linkInput = document.getElementById('linkEditInput');
+
+  // 모달 외부 클릭 시 닫기
+  linkModal.addEventListener('click', (e) => {
+    if (e.target === linkModal) closeLinkEditModal();
+  });
+
+  // Enter → 저장, Escape → 닫기
+  linkInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter')  saveLinkEdit();
+    if (e.key === 'Escape') closeLinkEditModal();
+  });
+
+  // 이미지 모달 ESC 닫기
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.getElementById('imgPreviewModal').style.display === 'flex')
+      closeImgModal();
+  });
 });
+
+// ============================================================
+// [이미지 미리보기 모달] CDN img_url 클릭 시 전체화면 표시
+// ============================================================
+function openImgModal(url) {
+  if (!url) return;
+  const modal   = document.getElementById('imgPreviewModal');
+  const img     = document.getElementById('imgPreviewImg');
+  const loading = document.getElementById('imgPreviewLoading');
+
+  // 로딩 상태로 초기화
+  loading.style.display = 'block';
+  img.style.display     = 'none';
+  img.src = '';
+
+  // 이미지 로드 완료 시 로딩 숨기고 이미지 표시
+  img.onload = () => {
+    loading.style.display = 'none';
+    img.style.display     = 'block';
+  };
+  img.onerror = () => {
+    loading.textContent   = '이미지를 불러올 수 없습니다.';
+  };
+
+  img.src = url;
+  modal.style.display = 'flex';
+}
+
+function closeImgModal() {
+  const modal   = document.getElementById('imgPreviewModal');
+  const img     = document.getElementById('imgPreviewImg');
+  const loading = document.getElementById('imgPreviewLoading');
+  modal.style.display   = 'none';
+  img.src               = '';
+  img.style.display     = 'none';
+  loading.style.display = 'block';
+  loading.textContent   = '로딩중...';
+}
+
+// ============================================================
+// [링크 수정 모달] 주문 행의 URL을 수정하고 관련 파생 데이터 재계산
+// ============================================================
+
+let linkEditTargetIndex   = -1; // 현재 수정 중인 첫 번째 orders 인덱스 (호환성 유지)
+let linkEditTargetIndices = []; // 일괄 수정 대상 인덱스 배열
+
+/** [링크수정] 버튼 클릭 → 체크된 행 전체를 일괄 수정 대상으로 모달 오픈 */
+function openLinkEditModal() {
+  if (orders.length === 0) { alert('주문 데이터가 없습니다.'); return; }
+
+  // 체크된 행 인덱스 수집
+  const checkedIndices = orders.reduce((acc, o, i) => {
+    if (o.checked) acc.push(i);
+    return acc;
+  }, []);
+
+  if (checkedIndices.length === 0) {
+    alert('먼저 수정할 행의 체크박스를 선택해주세요.');
+    return;
+  }
+
+  linkEditTargetIndex   = checkedIndices[0];
+  linkEditTargetIndices = checkedIndices;
+
+  // 첫 번째 선택 행의 URL을 입력란에 채우기
+  document.getElementById('linkEditInput').value = orders[linkEditTargetIndex].url || '';
+
+  const infoEl     = document.getElementById('linkEditInfo');
+  const bulkInfoEl = document.getElementById('linkEditBulkInfo');
+  const bulkWarnEl = document.getElementById('linkEditBulkWarning');
+  const bulkListEl = document.getElementById('linkEditBulkList');
+
+  if (checkedIndices.length === 1) {
+    // 단일 선택: 주문번호만 표시
+    infoEl.textContent       = `#${linkEditTargetIndex + 1}  ${orders[linkEditTargetIndex].orderNo}`;
+    bulkInfoEl.style.display = 'none';
+  } else {
+    // 복수 선택: 빨간 경고 + 주문번호 목록
+    infoEl.textContent       = '';
+    bulkInfoEl.style.display = 'block';
+    bulkWarnEl.textContent   = `${checkedIndices.length}개가 현재 선택되었습니다! 모두 일괄 수정됩니다.`;
+    bulkListEl.innerHTML     = checkedIndices
+      .map(i => `<div>#${i + 1} ${orders[i].orderNo}</div>`)
+      .join('');
+  }
+
+  document.getElementById('linkEditModal').classList.add('active');
+  setTimeout(() => {
+    const input = document.getElementById('linkEditInput');
+    input.focus();
+    input.select();
+  }, 50);
+}
+
+/** [저장] 클릭 → URL 처리 후 선택된 모든 행에 일괄 적용 + 재렌더 */
+function saveLinkEdit() {
+  const rawUrl = document.getElementById('linkEditInput').value.trim();
+  if (!rawUrl) { alert('URL을 입력해주세요.'); return; }
+  if (linkEditTargetIndices.length === 0) return;
+
+  const { cleanedUrl, offerId } = processUrl(rawUrl);
+
+  // 선택된 모든 행에 동일 URL 일괄 적용
+  linkEditTargetIndices.forEach(idx => {
+    const order = orders[idx];
+    order.url                     = cleanedUrl;              // 정리된 URL (자동화·복사용)
+    order.dbData.site_url         = rawUrl;                  // 원본 입력값 (Supabase 저장용)
+    order.dbData['1688_offer_id'] = offerId;                 // 재추출된 offer_id
+    if (order.originalData) order.originalData[11] = rawUrl; // 데이터 미리보기 L열
+  });
+
+  closeLinkEditModal();
+  renderOrderList(); // renderDataPreview() 내부 자동 호출
+}
+
+/** 링크 수정 모달 닫기 */
+function closeLinkEditModal() {
+  document.getElementById('linkEditModal').classList.remove('active');
+  linkEditTargetIndex   = -1;
+  linkEditTargetIndices = [];
+}
 
 // 검수 시작
 async function startReview() {
@@ -3146,12 +3469,12 @@ async function processDeductExcelV2(file) {
       return;
     }
 
-    // order_no로 기존 레코드 조회
-    const { data: existingOrder, error: findError } = await supabaseClient
+    // order_no로 기존 레코드 조회 (중복 행 있어도 에러 안 나게 배열로 받음)
+    const { data: existingOrders, error: findError } = await supabaseClient
       .from('ft_orders')
       .select('id')
       .eq('order_no', orderCode)
-      .maybeSingle();
+      .order('created_at', { ascending: false });
 
     if (findError) {
       console.error('ft_orders 조회 오류:', findError);
@@ -3159,10 +3482,16 @@ async function processDeductExcelV2(file) {
       return;
     }
 
-    if (!existingOrder) {
+    if (!existingOrders || existingOrders.length === 0) {
       alert(`ft_orders에 주문코드(${orderCode})가 없습니다.\n먼저 V2 저장을 진행해주세요.`);
       return;
     }
+
+    if (existingOrders.length > 1) {
+      console.warn(`ft_orders에 order_no(${orderCode}) 중복 ${existingOrders.length}건 — 최신 행 사용`);
+    }
+
+    const existingOrder = existingOrders[0]; // 최신 행 사용
 
     // UPDATE (가격 정보만 업데이트)
     const updateData = {
@@ -3224,75 +3553,118 @@ async function processDeductExcelV2(file) {
   }
 }
 
-// ========== 테이블 검색 기능 ==========
+// ============================================================
+// [테이블 검색 / 정렬]
+// - 이중 검색창 (AND 조건): Enter 키로 실행
+// - 검색 대상: 주문번호, offer_id, 바코드, 색상, 사이즈
+// ============================================================
 
-// 테이블 필터링 함수
-function filterOrderTable(searchText) {
-  const searchLower = searchText.toLowerCase().trim();
+// ---------- 정렬 상태 ----------
+let currentSortMode = 'default'; // 'default' | 'option'
+
+// 이중 필터 적용 (검색1 AND 검색2) — 메인 필터 함수
+function applyTableFilter() {
+  const s1 = (document.getElementById('tableSearchInput')?.value  || '').toLowerCase().trim();
+  const s2 = (document.getElementById('tableSearchInput2')?.value || '').toLowerCase().trim();
   const countSpan = document.getElementById('tableSearchCount');
   const table = document.querySelector('.order-table');
-
-  if (!table) {
-    countSpan.textContent = '';
-    return;
-  }
+  if (!table) return;
 
   const rows = table.querySelectorAll('tbody tr');
 
-  if (!searchLower) {
-    // 검색어가 없으면 모든 행 표시
+  // 두 검색어 모두 비어있으면 전체 표시
+  if (!s1 && !s2) {
     rows.forEach(row => row.classList.remove('search-hidden'));
-    countSpan.textContent = '';
+    if (countSpan) countSpan.textContent = '';
     return;
   }
 
   let visibleCount = 0;
-  let totalCount = rows.length;
 
-  rows.forEach((row, index) => {
-    const order = orders[index];
-    if (!order) {
-      row.classList.add('search-hidden');
-      return;
-    }
+  rows.forEach(row => {
+    // data-index로 orders 배열 참조 (정렬 후에도 정확한 매핑)
+    const idx = parseInt(row.dataset.index ?? -1);
+    const order = orders[idx];
+    if (!order) { row.classList.add('search-hidden'); return; }
 
-    // 주문번호 검색
-    const orderNo = (order.orderNo || '').toLowerCase();
+    // 검색 대상 필드 (주문번호, offer_id, 바코드, 색상, 사이즈, 상품명, 옵션명)
+    const fields = [
+      order.orderNo,
+      order.dbData?.['1688_offer_id'],
+      order.dbData?.barcode,
+      order.color,
+      order.size,
+      order.dbData?.item_name,   // 상품명 검색 추가
+      order.dbData?.option_name, // 옵션명 검색 추가
+    ].map(v => (v || '').toLowerCase());
 
-    // 판매자명 검색 (카트 데이터에서)
-    let sellerName = '';
-    if (order.reviewResult && order.reviewResult.cartItem && order.reviewResult.cartItem.sellerName) {
-      sellerName = order.reviewResult.cartItem.sellerName.toLowerCase();
-    }
+    const matchS1 = !s1 || fields.some(f => f.includes(s1));
+    const matchS2 = !s2 || fields.some(f => f.includes(s2));
+    const matched = matchS1 && matchS2;
 
-    // 주문번호 또는 판매자명에 검색어가 포함되면 표시
-    if (orderNo.includes(searchLower) || sellerName.includes(searchLower)) {
-      row.classList.remove('search-hidden');
-      visibleCount++;
-    } else {
-      row.classList.add('search-hidden');
-    }
+    row.classList.toggle('search-hidden', !matched);
+    if (matched) visibleCount++;
   });
 
-  countSpan.textContent = `${visibleCount} / ${totalCount}건`;
+  if (countSpan) countSpan.textContent = `${visibleCount} / ${rows.length}건`;
+
+  // 필터 변경 후 주황색 네비게이션 카운트 갱신
+  updateOrangeNav();
 }
 
-// 테이블 검색 초기화
+// 하위 호환 래퍼 (기존 호출부 유지용)
+function filterOrderTable(searchText) {
+  const input = document.getElementById('tableSearchInput');
+  if (input) input.value = searchText || '';
+  applyTableFilter();
+}
+
+// 검색 초기화 (두 창 모두)
 function clearTableSearch() {
-  const searchInput = document.getElementById('tableSearchInput');
-  const countSpan = document.getElementById('tableSearchCount');
-  const table = document.querySelector('.order-table');
+  const i1 = document.getElementById('tableSearchInput');
+  const i2 = document.getElementById('tableSearchInput2');
+  if (i1) i1.value = '';
+  if (i2) i2.value = '';
+  applyTableFilter();
+}
 
-  if (searchInput) {
-    searchInput.value = '';
+// offer_id / barcode 클릭 시 검색창1에 입력 후 필터 실행
+function searchByValue(value) {
+  if (!value) return;
+  const input = document.getElementById('tableSearchInput');
+  if (input) {
+    input.value = value;
+    applyTableFilter();
+    input.focus();
+  }
+}
+
+// 테이블 정렬 (드롭박스 onchange)
+function sortOrderTable(mode) {
+  currentSortMode = mode;
+  const tbody = document.querySelector('.order-table tbody');
+  if (!tbody) return;
+
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+
+  if (mode === 'default') {
+    // 원본 삽입 순서 (data-index 기준 오름차순)
+    rows.sort((a, b) => parseInt(a.dataset.index || 0) - parseInt(b.dataset.index || 0));
+  } else if (mode === 'option') {
+    // 색상 오름차순 → 같으면 사이즈 오름차순
+    rows.sort((a, b) => {
+      const oa = orders[parseInt(a.dataset.index || 0)];
+      const ob = orders[parseInt(b.dataset.index || 0)];
+      const colorA = (oa?.color || '').toLowerCase();
+      const colorB = (ob?.color || '').toLowerCase();
+      const sizeA  = (oa?.size  || '').toLowerCase();
+      const sizeB  = (ob?.size  || '').toLowerCase();
+      return colorA.localeCompare(colorB) || sizeA.localeCompare(sizeB);
+    });
   }
 
-  if (countSpan) {
-    countSpan.textContent = '';
-  }
+  rows.forEach(row => tbody.appendChild(row));
 
-  if (table) {
-    const rows = table.querySelectorAll('tbody tr');
-    rows.forEach(row => row.classList.remove('search-hidden'));
-  }
+  // 정렬 후 현재 검색 필터 재적용
+  applyTableFilter();
 }

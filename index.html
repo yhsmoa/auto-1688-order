@@ -18,7 +18,7 @@
     }
 
     .container {
-      max-width: 1235px;
+      max-width: 1600px;
       margin: 0 auto;
     }
 
@@ -331,6 +331,69 @@
       background: #ec971f;
     }
 
+    /* 링크수정 버튼 */
+    .btn-link-edit {
+      background: #5a6fd6;
+      color: white;
+    }
+
+    .btn-link-edit:hover {
+      background: #4a5fc6;
+    }
+
+    /* 링크 수정 모달 */
+    .link-edit-modal-content {
+      background: white;
+      border-radius: 8px;
+      padding: 24px 28px;
+      width: 680px;
+      max-width: 95vw;
+    }
+
+    .link-edit-modal-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .link-edit-input {
+      flex: 1;
+      padding: 10px 14px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .link-edit-input:focus {
+      border-color: #4a90d9;
+      box-shadow: 0 0 0 2px rgba(74,144,217,0.15);
+    }
+
+    .link-edit-save-btn {
+      padding: 10px 24px;
+      background: #4a90d9;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      transition: background 0.2s;
+    }
+
+    .link-edit-save-btn:hover {
+      background: #357abd;
+    }
+
+    .link-edit-info {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #888;
+      min-height: 18px;
+    }
+
     /* 테이블 검색 바 */
     .table-search-bar {
       display: flex;
@@ -343,6 +406,7 @@
 
     .table-search-bar input {
       flex: 1;
+      min-width: 0;
       padding: 8px 12px;
       border: 1px solid #ddd;
       border-radius: 4px;
@@ -352,6 +416,26 @@
 
     .table-search-bar input:focus {
       border-color: #4a90d9;
+    }
+
+    /* 클릭 가능 셀 공통 hover 스타일 */
+    .cell-clickable {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background-color 0.15s, color 0.15s;
+    }
+
+    .cell-clickable:hover {
+      background-color: #e8f0fe;
+      color: #1a56db;
+    }
+
+    /* 판매자명 hover (초록 계열) */
+    .cell-seller:hover {
+      background-color: #f0fdf4;
+      color: #15803d;
     }
 
     .table-search-count {
@@ -373,6 +457,31 @@
     .table-search-clear:hover {
       background: #eee;
       color: #333;
+    }
+
+    /* 테이블 정렬 바 */
+    .table-sort-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 15px;
+      background: #f8f8f8;
+      border-bottom: 1px solid #eee;
+      font-size: 13px;
+    }
+
+    .table-sort-bar label {
+      color: #555;
+      font-weight: 500;
+    }
+
+    .table-sort-bar select {
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      font-size: 13px;
+      cursor: pointer;
+      outline: none;
     }
 
     .order-table tr.search-hidden {
@@ -404,12 +513,7 @@
     }
 
     .order-table .order-no-cell {
-      cursor: pointer;
-      color: #4a90d9;
-    }
-
-    .order-table .order-no-cell:hover {
-      text-decoration: underline;
+      cursor: default;
     }
 
     .complete-cell {
@@ -745,6 +849,126 @@
       background: #e0e0e0;
     }
 
+    /* 데이터 미리보기 복사 버튼 */
+    .btn-copy-preview {
+      background: none;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      padding: 2px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      color: #555;
+    }
+    .btn-copy-preview:hover { background: #e0e0e0; }
+
+    /* 주문번호 셀 — 상품명+옵션 텍스트 */
+    .cell-item-label {
+      color: #222;
+      margin-bottom: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* 이미지 이모지 버튼 */
+    .cell-img-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0 2px;
+      font-size: 13px;
+      line-height: 1;
+      vertical-align: middle;
+      opacity: 0.55;
+      transition: opacity 0.15s;
+    }
+    .cell-img-btn:hover { opacity: 1; }
+
+    /* 이미지 미리보기 모달 */
+    .img-preview-content {
+      background: #fff;
+      border-radius: 8px;
+      padding: 12px;
+      max-width: 90vw;
+      max-height: 90vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .img-preview-content img {
+      max-width: 100%;
+      max-height: calc(90vh - 24px);
+      object-fit: contain;
+      border-radius: 4px;
+    }
+    .img-preview-loading {
+      color: #fff;
+      font-size: 15px;
+      padding: 20px 30px;
+      letter-spacing: 1px;
+    }
+
+    /* SET 배지 — 세트 상품 표시 */
+    .set-badge {
+      display: inline-block;
+      background: #e65c00;
+      color: #fff;
+      font-size: 10px;
+      font-weight: bold;
+      padding: 1px 5px;
+      border-radius: 3px;
+      margin-right: 3px;
+      vertical-align: middle;
+      line-height: 1.4;
+    }
+
+    /* 주황색 행 네비게이션 패널 (우측 하단 고정) */
+    .orange-nav-panel {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 9000;
+      align-items: center;
+      gap: 6px;
+      background: #fff;
+      border: 1px solid #f0ad4e;
+      border-radius: 8px;
+      padding: 6px 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+    }
+    .orange-nav-btn {
+      background: #f0ad4e;
+      border: none;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 13px;
+      padding: 2px 8px;
+      cursor: pointer;
+    }
+    .orange-nav-btn:hover { background: #ec971f; }
+    .orange-nav-count {
+      font-size: 12px;
+      color: #888;
+      min-width: 40px;
+      text-align: center;
+    }
+
+    /* 링크 수정 일괄 경고 */
+    .link-edit-bulk-warning {
+      color: #c0392b;
+      font-weight: bold;
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    .link-edit-bulk-list {
+      margin-top: 4px;
+      font-size: 12px;
+      color: #222;
+      max-height: 120px;
+      overflow-y: auto;
+      line-height: 1.7;
+    }
+
     .data-preview-table-wrapper {
       max-height: 200px;
       overflow: auto;
@@ -979,7 +1203,10 @@
       <div class="data-preview" id="dataPreview" style="display: none;">
         <div class="data-preview-header">
           <span>데이터 미리보기 (<span id="previewRowCount">0</span>행)</span>
-          <button class="btn-expand" onclick="openPreviewModal()">⛶</button>
+          <div style="display:flex; gap:6px;">
+            <button class="btn-copy-preview" onclick="copyPreviewData()">복사</button>
+            <button class="btn-expand" onclick="openPreviewModal()">⛶</button>
+          </div>
         </div>
         <div class="data-preview-table-wrapper">
           <table class="data-preview-table" id="previewTable">
@@ -992,15 +1219,29 @@
       <h3>
         <span>주문 목록 <span id="orderCount"></span></span>
         <div class="order-list-header-buttons">
+          <button class="btn-export btn-link-edit" onclick="openLinkEditModal()">링크수정</button>
           <button class="btn-export btn-apply-cart" onclick="applyAllCartData()">일괄 적용</button>
         </div>
       </h3>
       <div class="progress-bar" id="progressBar" style="display: none;">
         <div class="progress-bar-fill" id="progressFill"></div>
       </div>
-      <!-- 테이블 검색 -->
+      <!-- 테이블 정렬 -->
+      <div class="table-sort-bar">
+        <label>정렬:</label>
+        <select id="tableSortSelect" onchange="sortOrderTable(this.value)">
+          <option value="default"># 순서 (기본)</option>
+          <option value="option">옵션기준 (색상+사이즈)</option>
+        </select>
+      </div>
+      <!-- 테이블 검색 (이중 필터 — Enter로 실행, AND 조건) -->
       <div class="table-search-bar">
-        <input type="text" id="tableSearchInput" placeholder="주문번호 또는 판매자명 검색..." oninput="filterOrderTable(this.value)">
+        <input type="text" id="tableSearchInput"
+          placeholder="검색 1 (주문번호, offer_id, 바코드, 색상, 사이즈...)"
+          onkeydown="if(event.key==='Enter') applyTableFilter()">
+        <input type="text" id="tableSearchInput2"
+          placeholder="검색 2 (추가 필터)"
+          onkeydown="if(event.key==='Enter') applyTableFilter()">
         <span class="table-search-count" id="tableSearchCount"></span>
         <button class="table-search-clear" onclick="clearTableSearch()" title="검색 초기화">✕</button>
       </div>
@@ -1008,6 +1249,8 @@
         <div class="empty-message">데이터를 입력하고 저장 버튼을 클릭하세요</div>
       </div>
     </div>
+    <!-- 테이블 하단 여백: 검색 시 결과가 위쪽에 있어도 스크롤 위치 유지 -->
+    <div style="height: 300px;"></div>
   </div>
 
   <!-- 검색창 -->
@@ -1076,6 +1319,39 @@
         <button class="btn-save-exit" onclick="saveAndExit()">저장</button>
       </div>
     </div>
+  </div>
+
+  <!-- 링크 수정 모달 -->
+  <div class="modal-overlay" id="linkEditModal">
+    <div class="link-edit-modal-content">
+      <div class="modal-title">링크 수정</div>
+      <div class="link-edit-modal-row">
+        <input type="text" id="linkEditInput" class="link-edit-input"
+               placeholder="새 URL을 입력하세요...">
+        <button class="link-edit-save-btn" onclick="saveLinkEdit()">저장</button>
+      </div>
+      <div class="link-edit-info" id="linkEditInfo"></div>
+      <!-- 복수 선택 시 일괄 수정 경고 + 주문번호 목록 -->
+      <div id="linkEditBulkInfo" style="display:none;">
+        <div class="link-edit-bulk-warning" id="linkEditBulkWarning"></div>
+        <div class="link-edit-bulk-list" id="linkEditBulkList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 이미지 미리보기 모달 -->
+  <div class="modal-overlay" id="imgPreviewModal" onclick="closeImgModal()">
+    <div class="img-preview-content" onclick="event.stopPropagation()">
+      <div id="imgPreviewLoading" class="img-preview-loading">로딩중...</div>
+      <img id="imgPreviewImg" src="" alt="상품 이미지" style="display:none;">
+    </div>
+  </div>
+
+  <!-- 주황색 행 네비게이션 패널 (우측 하단 고정) -->
+  <div id="orangeNavPanel" class="orange-nav-panel" style="display:none;">
+    <span id="orangeNavCount" class="orange-nav-count">0 / 0</span>
+    <button class="orange-nav-btn" onclick="navigateOrangeRows(-1)" title="이전 확인 필요 항목">▲</button>
+    <button class="orange-nav-btn" onclick="navigateOrangeRows(1)" title="다음 확인 필요 항목">▼</button>
   </div>
 
   <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
