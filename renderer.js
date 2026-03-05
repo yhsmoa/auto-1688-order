@@ -3242,6 +3242,7 @@ async function saveToSupabaseV2() {
         set_seq: db.set_seq || null,
         coupang_shipment_size: db.coupang_shipment_size || null,
         item_no: db.order_number || null,
+        product_no: (db.order_number || '').split('-').slice(0, 3).join('-') || null,
         '1688_offer_id': db['1688_offer_id'] || null,
         '1688_order_id': db['1688_order_id'] || null,
         user_id: ftUserId,
