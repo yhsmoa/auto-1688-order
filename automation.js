@@ -1398,7 +1398,7 @@ async function selectAllCheckbox(page) {
     for (let i = 0; i < altCount; i++) {
       const cb = altCheckboxes.nth(i);
       const isChecked = await cb.isChecked().catch(() => false);
-      if (!isChecked) {
+       if (!isChecked) {
         await cb.click({ force: true });
         await page.waitForTimeout(300);
         console.log(`+ Checkbox ${i + 1}/${altCount} selected (alternative)`);
@@ -1446,10 +1446,15 @@ async function extractCartData(page) {
     const checkboxLabels = document.querySelectorAll('label[class*="item--checkbox"]');
 
     checkboxLabels.forEach(label => {
-      // 체크 상태 확인
-      const isChecked = label.classList.contains('checked');
+      // 체크 상태 확인 (label 클래스 또는 input.checked 병용)
+      const cbInput = label.querySelector('input[type="checkbox"]');
+      const isChecked = label.classList.contains('checked')
+                     || label.classList.contains('next-checkbox-checked')
+                     || (cbInput ? cbInput.checked : false);
       // 체크박스 disabled 상태 확인
-      const isDisabled = label.classList.contains('disabled');
+      const isDisabled = label.classList.contains('disabled')
+                      || label.classList.contains('next-checkbox-disabled')
+                      || (cbInput ? cbInput.disabled : false);
 
       // td 요소 찾기 (체크박스가 있는 셀)
       const td = label.closest('td');

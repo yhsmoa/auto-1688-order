@@ -2269,13 +2269,14 @@ function applyReviewResult(result) {
       if (orders[index].dbData && reviewResult.cartItem) {
         const cartItem = reviewResult.cartItem;
 
-        // china_total_price를 먼저 저장
+        // 단가 계산: 카트 소계(subtotal)를 카트 수량으로 나눠 진짜 단가를 구함
+        // 카트 subtotal은 해당 상품의 전체 수량 합계 금액이므로 order_qty가 아닌 cart quantity로 나눠야 함
         if (cartItem.subtotal !== undefined) {
-          orders[index].dbData.china_total_price = parseFloat(cartItem.subtotal.toFixed(2));
-
-          // china_price는 china_total_price / order_qty로 계산
+          const cartQty  = cartItem.quantity || 1;
+          const unitPrice = cartItem.subtotal / cartQty;
           const orderQty = orders[index].dbData.order_qty || orders[index].quantity || 1;
-          orders[index].dbData.china_price = parseFloat((cartItem.subtotal / orderQty).toFixed(2));
+          orders[index].dbData.china_price       = parseFloat(unitPrice.toFixed(2));
+          orders[index].dbData.china_total_price  = parseFloat((unitPrice * orderQty).toFixed(2));
         }
 
         if (cartItem.imgUrl) {
