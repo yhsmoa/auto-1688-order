@@ -1529,28 +1529,35 @@ function handleOrderNumberFile(event) {
       // 헤더 제거 (1행)
       const rows = jsonData.slice(1);
 
-      // offer_id(Y열=24)와 1688_orderNumber(A열=0) 추출
-      // A열이 병합된 경우 이전 행의 주문번호를 사용
+      // offer_id(Y열=24), 1688_orderNumber(A열=0), 배송비(G열=6) 추출
+      // A열/G열이 병합된 경우 이전 행의 값을 사용
       orderNumberData = [];
       let lastOrderNumber = ''; // 마지막으로 읽은 주문번호 저장
+      let lastDeliveryFee = 0;  // 마지막으로 읽은 배송비 저장 (G열, 병합셀)
 
       rows.forEach((row, idx) => {
         const orderNumber = row[0]; // A열
+        const deliveryFee = row[6]; // G열 (배송비 CNY, 병합셀)
         const offerId = row[24];    // Y열
 
         // A열에 값이 있으면 업데이트 (병합된 셀의 첫 행)
         if (orderNumber) {
           lastOrderNumber = String(orderNumber).trim();
         }
-
-        if (idx < 3) {
-          console.log(`행 ${idx + 2}: A열="${orderNumber}", Y열="${offerId}", 사용할 주문번호="${lastOrderNumber}"`);
+        // G열에 값이 있으면 업데이트 (병합된 셀의 첫 행)
+        if (deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== '') {
+          lastDeliveryFee = parseFloat(deliveryFee) || 0;
         }
 
-        // offer_id가 있으면 추가 (주문번호는 병합된 셀의 값 사용)
+        if (idx < 3) {
+          console.log(`행 ${idx + 2}: A열="${orderNumber}", G열="${deliveryFee}", Y열="${offerId}", 주문번호="${lastOrderNumber}", 배송비=${lastDeliveryFee}`);
+        }
+
+        // offer_id가 있으면 추가 (주문번호/배송비는 병합된 셀의 값 사용)
         if (offerId && lastOrderNumber) {
           orderNumberData.push({
             orderNumber: lastOrderNumber,
+            deliveryFee: lastDeliveryFee,
             offerId: String(offerId).trim()
           });
         }
@@ -1667,6 +1674,49 @@ function saveOrderNumbers() {
     });
   }
 
+  // ─── 배송비(price_delivery_cny) 비례 배분 ───────────────────────────────
+  // 동일 주문번호 내 모든 아이템의 수량 합계를 구한 뒤
+  // 각 아이템에 (item_qty / total_qty) * delivery_fee 를 배분
+  console.log('\n=== 배송비 비례 배분 시작 ===');
+
+  // 1) 주문번호별 매칭된 orders 인덱스 그룹화
+  const orderNoGroupMap = new Map(); // orderNumber → [{orderIdx, quantity}]
+  orders.forEach((order, idx) => {
+    const orderNumber = order.dbData && order.dbData['1688_order_id'];
+    if (!orderNumber) return;
+    if (!orderNoGroupMap.has(orderNumber)) orderNoGroupMap.set(orderNumber, []);
+    orderNoGroupMap.get(orderNumber).push({ orderIdx: idx, quantity: order.quantity || 0 });
+  });
+
+  // 2) 주문번호별 배송비 조회 (엑셀 데이터 기준, 첫 번째 매칭 행의 값 사용)
+  const deliveryFeeByOrderNo = new Map();
+  orderNumberData.forEach(data => {
+    if (!deliveryFeeByOrderNo.has(data.orderNumber)) {
+      deliveryFeeByOrderNo.set(data.orderNumber, data.deliveryFee || 0);
+    }
+  });
+
+  // 3) 각 주문에 비례 배송비 저장
+  orderNoGroupMap.forEach((items, orderNumber) => {
+    const totalShipping = deliveryFeeByOrderNo.get(orderNumber) || 0;
+    const totalQty = items.reduce((sum, item) => sum + item.quantity, 0);
+
+    console.log(`  주문번호 ${orderNumber}: 배송비=${totalShipping}CNY, 총수량=${totalQty}, 아이템=${items.length}개`);
+
+    items.forEach(({ orderIdx, quantity }) => {
+      const fee = totalQty > 0
+        ? Math.round((quantity / totalQty) * totalShipping * 100) / 100
+        : 0;
+      if (orders[orderIdx].dbData) {
+        orders[orderIdx].dbData.price_delivery_cny = fee;
+      }
+      console.log(`    아이템 ${orderIdx}: qty=${quantity}, price_delivery_cny=${fee}`);
+    });
+  });
+
+  console.log('=== 배송비 비례 배분 완료 ===\n');
+  // ────────────────────────────────────────────────────────────────────────
+
   renderOrderList();
 
   // 버튼 상태 업데이트
@@ -1679,6 +1729,7 @@ function saveOrderNumbers() {
   }
   alert(message);
 }
+
 
 // 완료 상태 토글 함수
 function toggleComplete(index) {
@@ -3219,8 +3270,19 @@ async function saveToSupabaseV2() {
     // ── Step 2: ft_order_items INSERT ──
     if (saveBtn) saveBtn.textContent = '아이템 저장 중...';
 
+    // product_no별 UUID 생성 (같은 product_no → 같은 product_id)
+    const productIdMap = new Map();
+    orders.forEach(order => {
+      const db = order.dbData || {};
+      const productNo = (db.order_number || '').split('-').slice(0, 3).join('-') || null;
+      if (productNo && !productIdMap.has(productNo)) {
+        productIdMap.set(productNo, crypto.randomUUID());
+      }
+    });
+
     const itemsToInsert = orders.map((order, index) => {
       const db = order.dbData || {};
+      const productNo = (db.order_number || '').split('-').slice(0, 3).join('-') || null;
       return {
         order_id: ftOrderId,
         order_no: db.order_code || orderCode,
@@ -3243,9 +3305,11 @@ async function saveToSupabaseV2() {
         set_seq: db.set_seq || null,
         coupang_shipment_size: db.coupang_shipment_size || null,
         item_no: db.order_number || null,
-        product_no: (db.order_number || '').split('-').slice(0, 3).join('-') || null,
+        product_no: productNo,
+        product_id: productIdMap.get(productNo) || null,
         '1688_offer_id': db['1688_offer_id'] || null,
         '1688_order_id': db['1688_order_id'] || null,
+        price_delivery_cny: db.price_delivery_cny ?? null,
         user_id: ftUserId,
         status: 'PROCESSING'
       };
