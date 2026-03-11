@@ -1138,6 +1138,44 @@
     .btn-save-exit:hover {
       background: #218838;
     }
+
+    /* 주문번호 인라인 입력 팝오버 */
+    .order-number-popover {
+      position: fixed;
+      background: white;
+      border: 1px solid #4a90d9;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+      padding: 7px 8px;
+      z-index: 9999;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .order-number-popover input {
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 5px 9px;
+      font-size: 13px;
+      width: 230px;
+      outline: none;
+      font-family: monospace;
+    }
+
+    .order-number-popover input:focus {
+      border-color: #4a90d9;
+      box-shadow: 0 0 0 2px rgba(74,144,217,0.15);
+    }
+
+    .match-cell {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .match-cell:hover {
+      background: #f0f0f0;
+    }
   </style>
 </head>
 <body>

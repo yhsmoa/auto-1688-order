@@ -1343,7 +1343,7 @@ function renderOrderList() {
         <td class="complete-cell" style="text-align: center;" onclick="toggleComplete(${index})">${completeHtml}</td>
         <td class="reason-cell" onclick="openReasonModal(${index})">${reasonText}</td>
         <td class="ref-cell" style="text-align: center; cursor: pointer;" onclick="showRefContextMenu(event, ${index}, '${refCodeText.replace(/'/g, "\\'")}')" title="클릭하여 메뉴 열기">${refHtml}</td>
-        <td style="text-align: center;">${order.matched ? '<span class="status-success">✅</span>' : (order.matched === false ? '<span class="status-error">❌</span>' : '-')}</td>
+        <td class="match-cell" style="text-align: center;" onclick="openOrderNumberInput(event, ${index})">${order.matched ? '<span class="status-success">✅</span>' : (order.matched === false ? '<span class="status-error">❌</span>' : '<span style="color:#aaa;">-</span>')}</td>
       </tr>
     `;
   });
@@ -1770,6 +1770,72 @@ function saveOrderNumbers() {
   alert(message);
 }
 
+
+// 매칭 셀 클릭 - 커서 위치에 주문번호 인라인 입력 팝오버 열기
+function openOrderNumberInput(event, index) {
+  event.stopPropagation();
+  closeOrderNumberPopover();
+
+  const order = orders[index];
+  // 현재 1688 주문번호 (orderNo의 첫 번째 줄 이후 부분)
+  const currentValue = (order.dbData && order.dbData['1688_order_id']) || '';
+
+  const popover = document.createElement('div');
+  popover.id = 'orderNumberPopover';
+  popover.className = 'order-number-popover';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = currentValue;
+  input.placeholder = '1688 주문번호 입력...';
+
+  let saved = false;
+
+  function save() {
+    if (saved) return;
+    saved = true;
+    const value = input.value.trim();
+    if (value) {
+      // orderNo는 '원본주문번호\n1688주문번호' 형태 — 첫 줄(원본)만 유지 후 새 값 추가
+      const baseOrderNo = order.orderNo.split('\n')[0];
+      order.orderNo = baseOrderNo + '\n' + value;
+      if (!order.dbData) order.dbData = {};
+      order.dbData['1688_order_id'] = value;
+      order.matched = true;
+    }
+    closeOrderNumberPopover();
+    renderOrderList();
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+    if (e.key === 'Escape') { saved = true; closeOrderNumberPopover(); }
+  });
+
+  input.addEventListener('blur', () => {
+    setTimeout(save, 150);
+  });
+
+  popover.appendChild(input);
+  document.body.appendChild(popover);
+
+  // 클릭 위치 바로 위에 팝오버 배치
+  const popoverH = 42;
+  let top = event.clientY - popoverH - 6;
+  let left = event.clientX - 10;
+  if (top < 4) top = event.clientY + 6;
+  if (left + 270 > window.innerWidth) left = window.innerWidth - 274;
+  popover.style.top = top + 'px';
+  popover.style.left = left + 'px';
+
+  input.focus();
+  input.select();
+}
+
+function closeOrderNumberPopover() {
+  const existing = document.getElementById('orderNumberPopover');
+  if (existing) existing.remove();
+}
 
 // 완료 상태 토글 함수
 function toggleComplete(index) {
