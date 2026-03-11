@@ -1144,6 +1144,7 @@
   <div class="container">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
       <h1 style="margin: 0;">1688 자동 주문 시스템</h1>
+      <button class="btn-login-setup" onclick="resetBrowserProfile()" style="background-color: #dc3545; margin-right: 8px;">초기화 설정</button>
       <button class="btn-login-setup" onclick="openLoginSetup()">로그인 설정</button>
     </div>
 
@@ -1281,8 +1282,17 @@
         <button class="modal-btn" data-reason="품절">품절</button>
         <button class="modal-btn" data-reason="이미지 옵션명 불일치">이미지 옵션명 불일치</button>
         <button class="modal-btn" data-reason="옵션명 없음">옵션명 없음</button>
-        <button class="modal-btn" data-reason="직접입력" id="btnCustomReason">직접 입력</button>
-        <input type="text" class="modal-input" id="customReasonInput" placeholder="직접 입력..." disabled>
+
+        <!-- ── 취소 사유 직접 입력 (폼) ── -->
+        <input type="text" class="modal-input" id="customReasonInput" placeholder="취소 사유 입력...">
+
+        <!-- ── 구분선 ── -->
+        <hr style="border: none; border-top: 1px solid #ddd; margin: 15px 0;">
+
+        <!-- ── 기타 내용 입력 (폼) ── -->
+        <input type="text" class="modal-input" id="otherNoteInput" placeholder="기타 내용 입력...">
+
+        <!-- ── 지우기 ── -->
         <hr style="border: none; border-top: 1px solid #ddd; margin: 15px 0;">
         <button class="modal-btn-clear" onclick="clearReason()">지우기</button>
       </div>

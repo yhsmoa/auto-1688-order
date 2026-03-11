@@ -373,18 +373,51 @@ async function saveDeductTransaction(calcData) {
   console.log('저장할 데이터:', transactionData);
 
   try {
-    const { data, error } = await supabaseClient
+    // ── order_code 기준 중복 검사 ──
+    const { data: existingTx, error: checkError } = await supabaseClient
       .from('invoiceManager_transactions')
-      .insert([transactionData])
-      .select();
+      .select('id')
+      .eq('order_code', calcData.order_code)
+      .limit(1);
 
-    if (error) {
-      console.error('차감 저장 오류:', error);
-      alert(`차감 저장 실패: ${error.message}`);
+    if (checkError) {
+      console.error('중복 검사 오류:', checkError);
+      alert(`중복 검사 실패: ${checkError.message}`);
       return;
     }
 
-    console.log('✓ 차감 저장 완료:', data);
+    let data;
+    if (existingTx && existingTx.length > 0) {
+      // ── 기존 레코드 UPDATE (order_code 기준) ──
+      console.log(`order_code(${calcData.order_code}) 기존 레코드 발견 → UPDATE`);
+      const { data: updateData, error: updateError } = await supabaseClient
+        .from('invoiceManager_transactions')
+        .update(transactionData)
+        .eq('id', existingTx[0].id)
+        .select();
+
+      if (updateError) {
+        console.error('차감 업데이트 오류:', updateError);
+        alert(`차감 업데이트 실패: ${updateError.message}`);
+        return;
+      }
+      data = updateData;
+      console.log('✓ 차감 업데이트 완료:', data);
+    } else {
+      // ── 신규 INSERT ──
+      const { data: insertData, error: insertError } = await supabaseClient
+        .from('invoiceManager_transactions')
+        .insert([transactionData])
+        .select();
+
+      if (insertError) {
+        console.error('차감 저장 오류:', insertError);
+        alert(`차감 저장 실패: ${insertError.message}`);
+        return;
+      }
+      data = insertData;
+      console.log('✓ 차감 저장 완료:', data);
+    }
 
     // 저장 검증 - 실제로 데이터가 저장됐는지 확인
     if (!data || data.length === 0) {
@@ -505,7 +538,7 @@ async function loadFtUsers() {
   try {
     const { data, error } = await supabaseClient
       .from('ft_users')
-      .select('id, full_name, user_code, phone, address')
+      .select('id, full_name, user_code, phone, address, balance_id, vender_name')
       .order('full_name', { ascending: true });
 
     if (error) {
@@ -542,6 +575,8 @@ function populateFtUserSelect() {
     option.dataset.fullName = user.full_name;
     option.dataset.phone = user.phone || '';
     option.dataset.address = user.address || '';
+    option.dataset.balanceId = user.balance_id || '';
+    option.dataset.venderName = user.vender_name || '';
     select.appendChild(option);
   });
 
@@ -1188,7 +1223,7 @@ function renderOrderList() {
     }
 
     // 사유 필드
-    const reasonText = order.reason || '-';
+    const reasonText = order.reason || order.otherNote || '-';
 
     // 참조코드 텍스트 생성 (새 형식: 주문코드 | 주문번호날짜부분 | 주문번호뒷부분:수량)
     const orderNo = order.orderNo || '';
@@ -1285,10 +1320,15 @@ function renderOrderList() {
     // 무효 행은 테이블에 표시하지 않음 (데이터 미리보기에서만 표시)
     if (order.isInvalid) return;
 
-    // 실패 건은 주황색 배경 + row-orange 클래스 (네비게이션 쿼리용)
-    const trAttrs = isFailed
-      ? ' class="row-orange" style="background-color: #ffcc99;"'
-      : '';
+    // 취소 사유가 있는 행은 회색 배경 (기타 내용만 있는 경우 제외)
+    const hasCancelReason = order.reason && order.reasonType !== 'other';
+
+    // 우선순위: 취소사유 회색 > 실패 주황색 > 기본
+    const trAttrs = hasCancelReason
+      ? ' class="row-gray" style="background-color: #d9d9d9;"'
+      : isFailed
+        ? ' class="row-orange" style="background-color: #ffcc99;"'
+        : '';
 
     html += `
       <tr data-index="${index}"${trAttrs}>
@@ -1998,20 +2038,23 @@ function openReasonModal(index) {
 
   // 입력 필드 초기화
   const customInput = document.getElementById('customReasonInput');
+  const otherNoteInput = document.getElementById('otherNoteInput');
   customInput.value = '';
-  customInput.disabled = true;
+  otherNoteInput.value = '';
 
-  // 기존 사유가 있으면 해당 버튼 선택
-  if (order.reason) {
+  // 기존 사유/기타내용 복원
+  if (order.reason && order.reasonType !== 'other') {
     const reasonBtn = document.querySelector(`.modal-btn[data-reason="${order.reason}"]`);
     if (reasonBtn) {
+      // 프리셋 버튼 선택
       reasonBtn.classList.add('selected');
-    } else if (order.reasonType === 'custom') {
-      // 직접 입력인 경우
-      document.getElementById('btnCustomReason').classList.add('selected');
-      customInput.disabled = false;
+    } else {
+      // 직접 입력 취소사유
       customInput.value = order.reason;
     }
+  }
+  if (order.otherNote) {
+    otherNoteInput.value = order.otherNote;
   }
 
   modal.classList.add('active');
@@ -2024,69 +2067,100 @@ function closeReasonModal() {
   currentReasonIndex = -1;
 }
 
-// 사유 선택 처리
+// 취소 사유 선택 처리 (프리셋 또는 직접 입력)
 function selectReason(reason, isCustom = false) {
   if (currentReasonIndex >= 0 && currentReasonIndex < orders.length) {
     orders[currentReasonIndex].reason = reason;
     orders[currentReasonIndex].reasonType = isCustom ? 'custom' : 'preset';
+    orders[currentReasonIndex].otherNote = '';  // 취소사유 선택 시 기타 내용 클리어
     renderOrderList();
   }
   closeReasonModal();
 }
 
-// 사유 지우기
+// 기타 내용 입력 처리 (배경색 영향 없음)
+function selectOtherNote(note) {
+  if (currentReasonIndex >= 0 && currentReasonIndex < orders.length) {
+    orders[currentReasonIndex].otherNote = note;
+    orders[currentReasonIndex].reason = '';      // 기타 내용 입력 시 취소사유 클리어
+    orders[currentReasonIndex].reasonType = 'other';
+    renderOrderList();
+  }
+  closeReasonModal();
+}
+
+// 사유 지우기 (전체 클리어)
 function clearReason() {
   if (currentReasonIndex >= 0 && currentReasonIndex < orders.length) {
     orders[currentReasonIndex].reason = '';
     orders[currentReasonIndex].reasonType = '';
+    orders[currentReasonIndex].otherNote = '';
     renderOrderList();
   }
   closeReasonModal();
 }
 
-// 모달 이벤트 초기화
+// ── 사유 모달 이벤트 초기화 ──
 document.addEventListener('DOMContentLoaded', () => {
   const modal = document.getElementById('reasonModal');
   const customInput = document.getElementById('customReasonInput');
+  const otherNoteInput = document.getElementById('otherNoteInput');
 
-  // 모달 외부 클릭 시 닫기 (직접 입력 값 저장)
+  // ── 모달 외부 클릭 시 닫기 (입력값 저장) ──
   modal.addEventListener('click', (e) => {
     if (e.target === modal) {
-      // 직접 입력 모드이고 값이 있으면 저장
-      if (!customInput.disabled && customInput.value.trim()) {
+      if (customInput.value.trim()) {
+        // 취소 사유 입력값이 있으면 저장
         selectReason(customInput.value.trim(), true);
+      } else if (otherNoteInput.value.trim()) {
+        // 기타 내용 입력값이 있으면 저장
+        selectOtherNote(otherNoteInput.value.trim());
       } else {
         closeReasonModal();
       }
     }
   });
 
-  // 사유 버튼 클릭
+  // ── 취소 사유 프리셋 버튼 클릭 ──
   document.querySelectorAll('.modal-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const reason = btn.dataset.reason;
+      if (!reason) return;  // data-reason 없는 버튼은 무시 (지우기 등)
 
-      // 모든 버튼 선택 해제
+      // 모든 버튼 선택 해제 + 입력 필드 클리어
       document.querySelectorAll('.modal-btn').forEach(b => b.classList.remove('selected'));
       btn.classList.add('selected');
+      customInput.value = '';
+      otherNoteInput.value = '';
 
-      if (reason === '직접입력') {
-        // 직접 입력 활성화
-        customInput.disabled = false;
-        customInput.focus();
-      } else {
-        // 프리셋 선택 - 바로 적용
-        customInput.disabled = true;
-        customInput.value = '';
-        selectReason(reason, false);
-      }
+      // 프리셋 선택 - 바로 적용
+      selectReason(reason, false);
     });
   });
 
-  // 입력 필드에서 Enter 키 누르면 저장
+  // ── 취소 사유 입력 폼 ──
+  customInput.addEventListener('focus', () => {
+    // 포커스 시 버튼 선택 해제 + 기타 내용 클리어 (상호 배타)
+    document.querySelectorAll('.modal-btn').forEach(b => b.classList.remove('selected'));
+    otherNoteInput.value = '';
+  });
+
   customInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter' && customInput.value.trim()) {
       selectReason(customInput.value.trim(), true);
+    }
+  });
+
+  // ── 기타 내용 입력 폼 ──
+  otherNoteInput.addEventListener('focus', () => {
+    // 포커스 시 버튼 선택 해제 + 취소 사유 클리어 (상호 배타)
+    document.querySelectorAll('.modal-btn').forEach(b => b.classList.remove('selected'));
+    customInput.value = '';
+  });
+
+  otherNoteInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && otherNoteInput.value.trim()) {
+      selectOtherNote(otherNoteInput.value.trim());
     }
   });
 
@@ -2771,10 +2845,10 @@ function showEmptyTextareaWarning(emptyCount, totalCount, emptySellerNames = [])
 
   warning.innerHTML = messageHTML;
 
-  // 주문 목록 컨테이너 아래에 추가
-  const orderListContainer = document.getElementById('orderListContent');
-  if (orderListContainer && orderListContainer.parentNode) {
-    orderListContainer.parentNode.insertBefore(warning, orderListContainer.nextSibling);
+  // 주문 목록 섹션(.order-list) 바로 앞에 삽입 (데이터 미리보기 아래, 주문 목록 위)
+  const orderListSection = document.querySelector('.order-list');
+  if (orderListSection && orderListSection.parentNode) {
+    orderListSection.parentNode.insertBefore(warning, orderListSection);
   }
 }
 
@@ -3235,7 +3309,7 @@ async function saveToSupabaseV2() {
   console.log('=== V2 저장 시작 ===');
 
   try {
-    // ── Step 1: ft_orders INSERT ──
+    // ── Step 1: ft_orders UPSERT (order_no 기준 중복 검사) ──
     const ftOrderData = {
       order_no: orderCode,
       user_id: ftUserId,
@@ -3248,27 +3322,75 @@ async function saveToSupabaseV2() {
 
     console.log('ft_orders 저장 데이터:', ftOrderData);
 
-    const { data: orderData, error: orderError } = await supabaseClient
+    // order_no 기준 중복 검사
+    const { data: existingOrder, error: checkOrderError } = await supabaseClient
       .from('ft_orders')
-      .insert([ftOrderData])
-      .select();
+      .select('id')
+      .eq('order_no', orderCode)
+      .order('created_at', { ascending: false })
+      .limit(1);
 
-    if (orderError) {
-      console.error('ft_orders 저장 오류:', orderError);
-      alert(`ft_orders 저장 실패: ${orderError.message}`);
+    if (checkOrderError) {
+      console.error('ft_orders 중복 검사 오류:', checkOrderError);
+      alert(`ft_orders 중복 검사 실패: ${checkOrderError.message}`);
       return;
     }
 
-    if (!orderData || orderData.length === 0) {
-      alert('ft_orders 저장 실패: 데이터가 반환되지 않았습니다.');
-      return;
+    let ftOrderId;
+
+    if (existingOrder && existingOrder.length > 0) {
+      // ── 기존 레코드 UPDATE ──
+      ftOrderId = existingOrder[0].id;
+      console.log(`ft_orders order_no(${orderCode}) 기존 레코드 발견 → UPDATE (ID: ${ftOrderId})`);
+
+      const { error: updateOrderError } = await supabaseClient
+        .from('ft_orders')
+        .update(ftOrderData)
+        .eq('id', ftOrderId);
+
+      if (updateOrderError) {
+        console.error('ft_orders 업데이트 오류:', updateOrderError);
+        alert(`ft_orders 업데이트 실패: ${updateOrderError.message}`);
+        return;
+      }
+      console.log('✓ ft_orders 업데이트 완료 (ID:', ftOrderId, ')');
+    } else {
+      // ── 신규 INSERT ──
+      const { data: orderData, error: orderError } = await supabaseClient
+        .from('ft_orders')
+        .insert([ftOrderData])
+        .select();
+
+      if (orderError) {
+        console.error('ft_orders 저장 오류:', orderError);
+        alert(`ft_orders 저장 실패: ${orderError.message}`);
+        return;
+      }
+
+      if (!orderData || orderData.length === 0) {
+        alert('ft_orders 저장 실패: 데이터가 반환되지 않았습니다.');
+        return;
+      }
+
+      ftOrderId = orderData[0].id;
+      console.log('✓ ft_orders 신규 저장 완료 (ID:', ftOrderId, ')');
     }
 
-    const ftOrderId = orderData[0].id;
-    console.log('✓ ft_orders 저장 완료 (ID:', ftOrderId, ')');
-
-    // ── Step 2: ft_order_items INSERT ──
+    // ── Step 2: ft_order_items (기존 아이템 삭제 후 INSERT) ──
     if (saveBtn) saveBtn.textContent = '아이템 저장 중...';
+
+    // order_id 기준 기존 아이템 삭제 (중복 방지)
+    const { error: deleteItemsError } = await supabaseClient
+      .from('ft_order_items')
+      .delete()
+      .eq('order_id', ftOrderId);
+
+    if (deleteItemsError) {
+      console.error('ft_order_items 기존 데이터 삭제 오류:', deleteItemsError);
+      alert(`ft_order_items 기존 데이터 삭제 실패: ${deleteItemsError.message}`);
+      return;
+    }
+    console.log('✓ ft_order_items 기존 데이터 삭제 완료 (order_id:', ftOrderId, ')');
 
     // product_no별 UUID 생성 (같은 product_no → 같은 product_id)
     const productIdMap = new Map();
@@ -3527,6 +3649,24 @@ async function processDeductExcelV2(file) {
     console.log('service_fee (6%):', service_fee);
     console.log('total_amount (합계):', total_amount);
 
+    // ── 선택된 ft_user 정보 가져오기 ──
+    const ftUserSelect = document.getElementById('ftUserSelect');
+    const selectedOption = ftUserSelect ? ftUserSelect.selectedOptions[0] : null;
+
+    if (!ftUserSelect || !ftUserSelect.value) {
+      alert('ft_users에서 사용자를 선택해주세요.');
+      return;
+    }
+
+    const userId = ftUserSelect.value;
+    const balanceId = selectedOption.dataset.balanceId;
+    const venderName = selectedOption.dataset.venderName || '';
+
+    if (!balanceId) {
+      alert('선택된 사용자에게 balance_id가 없습니다.');
+      return;
+    }
+
     // ── ft_orders UPSERT (order_no 기준) ──
     const orderCode = Array.from(excelOrderCodes)[0];
 
@@ -3605,8 +3745,92 @@ async function processDeductExcelV2(file) {
       return;
     }
 
-    console.log('✓ V2 차감 저장 및 검증 완료');
-    alert(`V2 차감 완료!\n\n주문코드: ${orderCode}\n배송비: ${delivery_fee.toLocaleString()}원\n상품가: ${total_item_price.toLocaleString()}원\n수수료: ${service_fee.toLocaleString()}원\n총액: ${total_amount.toLocaleString()}원\n\n✓ ft_orders 업데이트 확인됨`);
+    console.log('✓ ft_orders 업데이트 및 검증 완료');
+
+    // ── ft_user_transactions 중복 검사 (같은 balance_id + amount + 오늘 날짜) ──
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const { data: existingTx, error: txCheckError } = await supabaseClient
+      .from('ft_user_transactions')
+      .select('id, created_at')
+      .eq('balance_id', balanceId)
+      .eq('amount', total_amount)
+      .eq('type', 'out')
+      .eq('category', '구매')
+      .gte('created_at', todayStart.toISOString())
+      .limit(1);
+
+    if (txCheckError) {
+      console.error('거래 중복 검사 오류:', txCheckError);
+    }
+
+    if (existingTx && existingTx.length > 0) {
+      const confirmDuplicate = confirm(
+        `동일한 차감 내역이 이미 존재합니다.\n` +
+        `금액: ${total_amount.toLocaleString()}원\n` +
+        `시간: ${new Date(existingTx[0].created_at).toLocaleString()}\n\n` +
+        `중복 차감을 진행하시겠습니까?`
+      );
+      if (!confirmDuplicate) {
+        alert('V2 차감이 취소되었습니다.');
+        return;
+      }
+    }
+
+    // ── ft_balances 차감 + ft_user_transactions 기록 (RPC) ──
+    const { data: rpcResult, error: rpcError } = await supabaseClient
+      .rpc('deduct_balance_and_record_transaction', {
+        p_balance_id:    balanceId,
+        p_user_id:       userId,
+        p_vender_name:   venderName,
+        p_amount:        total_amount,
+        p_qty:           item_qty,
+        p_item_amount:   total_item_price,
+        p_shipping_fee:  delivery_fee,
+        p_service_fee:   service_fee,
+        p_other_fee:     0,
+        p_description:   orderCode + ' 주문',
+        p_reference_id:  null,
+        p_order_no_1688: null,
+        p_admin_note:    null
+      });
+
+    if (rpcError) {
+      console.error('RPC 차감 오류:', rpcError);
+      alert(`ft_orders는 업데이트됨.\n하지만 잔액 차감 실패: ${rpcError.message}`);
+      return;
+    }
+
+    console.log('✓ RPC 차감 결과:', rpcResult);
+
+    // ── 검증: ft_balances 잔액 확인 ──
+    const { data: verifyBalance, error: verifyBalanceError } = await supabaseClient
+      .from('ft_balances')
+      .select('balance')
+      .eq('id', balanceId)
+      .single();
+
+    if (verifyBalanceError || !verifyBalance) {
+      console.error('잔액 검증 조회 오류:', verifyBalanceError);
+      alert('차감은 완료되었으나 잔액 검증 조회에 실패했습니다.');
+    } else {
+      const balanceMatch = parseFloat(verifyBalance.balance) === rpcResult.new_balance;
+      if (!balanceMatch) {
+        console.warn('잔액 불일치:', { db: verifyBalance.balance, expected: rpcResult.new_balance });
+      }
+      console.log('✓ 잔액 검증:', balanceMatch ? '일치' : '불일치');
+    }
+
+    // ── 완료 ──
+    alert(`V2 차감 완료!\n\n` +
+      `주문코드: ${orderCode}\n` +
+      `차감액: ${total_amount.toLocaleString()}원\n` +
+      `상품가: ${total_item_price.toLocaleString()}원\n` +
+      `배송비: ${delivery_fee.toLocaleString()}원\n` +
+      `수수료: ${service_fee.toLocaleString()}원\n` +
+      `수량: ${item_qty}개\n\n` +
+      `잔액: ${rpcResult.new_balance.toLocaleString()}원\n` +
+      `거래ID: ${rpcResult.transaction_id}`);
 
     stepStatus.deduct = true;
     updateButtonSteps();
