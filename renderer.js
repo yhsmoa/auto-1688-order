@@ -3327,6 +3327,41 @@ async function saveToSupabase() {
   }
 }
 
+// ========== V열(배송 사이즈/타입) 파싱 헬퍼 ==========
+// V열 원본값을 분석해 shipment_type, coupang_shipment_size, personal_order_no 를 반환
+// - Small / Medium / Large / ""  → COUPANG  (coupang_shipment_size 그대로)
+// - "P-숫자"                     → PERSONAL (personal_order_no = 숫자 부분)
+// - "Direct"                     → DIRECT
+function parseShipmentInfo(rawValue) {
+  const val = (rawValue || '').trim();
+
+  // PERSONAL: "P-" 뒤에 숫자가 오는 패턴
+  const personalMatch = val.match(/^P-(\d+)$/i);
+  if (personalMatch) {
+    return {
+      shipment_type: 'PERSONAL',
+      coupang_shipment_size: null,
+      personal_order_no: personalMatch[1]
+    };
+  }
+
+  // DIRECT
+  if (val.toLowerCase() === 'direct') {
+    return {
+      shipment_type: 'DIRECT',
+      coupang_shipment_size: null,
+      personal_order_no: null
+    };
+  }
+
+  // COUPANG: Small / Medium / Large / 빈값 → 대문자 정규화 (SMALL / MEDIUM / LARGE)
+  return {
+    shipment_type: 'COUPANG',
+    coupang_shipment_size: val ? val.toUpperCase() : null,
+    personal_order_no: null
+  };
+}
+
 // ========== V2 저장 (ft_orders + ft_order_items) ==========
 async function saveToSupabaseV2() {
   const saveBtn = document.getElementById('btnSaveV2');
@@ -3471,6 +3506,10 @@ async function saveToSupabaseV2() {
     const itemsToInsert = orders.map((order, index) => {
       const db = order.dbData || {};
       const productNo = (db.order_number || '').split('-').slice(0, 3).join('-') || null;
+
+      // V열 배송 타입 파싱 (COUPANG / PERSONAL / DIRECT)
+      const shipment = parseShipmentInfo(db.coupang_shipment_size);
+
       return {
         order_id: ftOrderId,
         order_no: db.order_code || orderCode,
@@ -3491,7 +3530,10 @@ async function saveToSupabaseV2() {
         recommanded_age: db.recomanded_age || null,
         set_total: db.set_total || null,
         set_seq: db.set_seq || null,
-        coupang_shipment_size: db.coupang_shipment_size || null,
+        // ── 배송 타입 분기 결과 ──
+        shipment_type: shipment.shipment_type,
+        coupang_shipment_size: shipment.coupang_shipment_size,
+        personal_order_no: shipment.personal_order_no,
         item_no: db.order_number || null,
         product_no: productNo,
         product_id: productIdMap.get(productNo) || null,
