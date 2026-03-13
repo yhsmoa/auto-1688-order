@@ -2770,6 +2770,130 @@ function exportFailedOrders() {
   alert(`${failedOrders.length}건의 실패 데이터가 복사되었습니다.`);
 }
 
+// ========== 실패V2: ft_order_items_failed에 실패 데이터 저장 ==========
+async function exportFailedOrdersV2() {
+  const failBtn = document.getElementById('btnExportFailV2');
+  const originalText = failBtn ? failBtn.textContent : '실패V2';
+
+  // ── Supabase 연결 확인 ──
+  if (!supabaseClient) {
+    alert('Supabase 연결이 초기화되지 않았습니다.');
+    return;
+  }
+
+  if (orders.length === 0) {
+    alert('주문 데이터가 없습니다.');
+    return;
+  }
+
+  // ── ft_users 유저 선택 확인 ──
+  const ftUserSelect = document.getElementById('ftUserSelect');
+  if (!ftUserSelect || !ftUserSelect.value) {
+    alert('유저를 선택해주세요.');
+    return;
+  }
+  const ftUserId = ftUserSelect.value;
+
+  // ── 실패 건 필터링 (기존 exportFailedOrders와 동일 로직) ──
+  const failedOrders = orders.filter(order => {
+    if (order.finalComplete !== undefined) {
+      return order.finalComplete === false;
+    }
+    const hasResult = order.status && order.status !== 'pending';
+    const hasReview = order.reviewStatus && order.reviewStatus !== '';
+    const resultTrue = order.status === 'success';
+    const reviewTrue = order.reviewStatus === 'ok';
+
+    if (hasResult && hasReview) {
+      return !(resultTrue && reviewTrue);
+    } else if (hasResult && !hasReview) {
+      return !resultTrue;
+    } else if (!hasResult && hasReview) {
+      return !reviewTrue;
+    }
+    return false;
+  });
+
+  if (failedOrders.length === 0) {
+    alert('저장할 실패 데이터가 없습니다.');
+    return;
+  }
+
+  // ── 버튼 로딩 상태 ──
+  if (failBtn) {
+    failBtn.disabled = true;
+    failBtn.textContent = '저장 중...';
+    failBtn.style.opacity = '0.7';
+  }
+
+  console.log(`=== 실패V2 저장 시작: ${failedOrders.length}건 ===`);
+
+  try {
+    // ── ft_order_items_failed INSERT 데이터 구성 ──
+    const itemsToInsert = failedOrders.map(order => {
+      const db = order.dbData || {};
+      const original = order.originalData || [];
+
+      return {
+        user_id: ftUserId,
+        request_date: original[0] || null,                           // A col
+        item_no: db.order_number || null,                            // B col
+        item_name: db.item_name || null,                             // C col
+        option_name: db.option_name || null,                         // D col
+        qty: db.order_qty ? parseInt(db.order_qty) : 0,             // E col
+        barcode: db.barcode || null,                                 // F col
+        china_option1: db.china_option1 || null,                     // G col
+        china_option2: db.china_option2 || null,                     // H col
+        unit_price_cny: db.china_price ? parseFloat(db.china_price) : 0,       // I col
+        total_price_cny: db.china_total_price ? parseFloat(db.china_total_price) : 0, // J col
+        img_url: db.img_url || null,                                 // K col
+        site_url: db.site_url || null,                               // L col
+        note: db.korea_note || null,                                 // Q col
+        fail_reason: db.china_note || order.reason || null,          // R col (비고란)
+        option_id: db.option_id || null,                             // U col
+        shipment_info: db.coupang_shipment_size || null,             // V col
+        composition: db.composition || null,                         // W col
+        recommanded_age: db.recomanded_age || null,                  // X col
+        set_total: db.set_total ? parseInt(db.set_total) : null,     // Y col
+        set_seq: db.set_seq ? parseInt(db.set_seq) : null            // Z col
+      };
+    });
+
+    console.log('ft_order_items_failed 저장 데이터:', itemsToInsert.length, '건');
+
+    // ── Supabase INSERT ──
+    const { data, error } = await supabaseClient
+      .from('ft_order_items_failed')
+      .insert(itemsToInsert)
+      .select();
+
+    if (error) {
+      console.error('ft_order_items_failed 저장 오류:', error);
+      alert(`실패V2 저장 실패: ${error.message}`);
+      return;
+    }
+
+    const savedCount = data ? data.length : 0;
+    console.log(`✓ ft_order_items_failed 저장 완료: ${savedCount}건`);
+
+    alert(`실패V2 저장 완료!\n\nft_order_items_failed: ${savedCount}건 저장`);
+
+    // ── 버튼 상태 업데이트 ──
+    stepStatus.fail = true;
+    updateButtonSteps();
+
+  } catch (error) {
+    console.error('실패V2 저장 예외:', error);
+    alert('실패V2 저장 중 오류: ' + error.message);
+  } finally {
+    if (failBtn) {
+      failBtn.disabled = false;
+      failBtn.textContent = originalText;
+      failBtn.style.opacity = '1';
+    }
+  }
+}
+
 // 참조코드 입력 (주문 확인 창에서)
 async function inputRefCodes() {
   // 성공한 주문만 필터링 (완료 상태인 것)
