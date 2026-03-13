@@ -3335,8 +3335,8 @@ async function saveToSupabase() {
 function parseShipmentInfo(rawValue) {
   const val = (rawValue || '').trim();
 
-  // PERSONAL: "P-" 뒤에 숫자가 오는 패턴
-  const personalMatch = val.match(/^P-(\d+)$/i);
+  // PERSONAL: "P-" 뒤에 숫자가 오는 패턴 (뒤에 이름 등 추가 텍스트 허용)
+  const personalMatch = val.match(/^P-(\d+)/i);
   if (personalMatch) {
     return {
       shipment_type: 'PERSONAL',
@@ -3508,7 +3508,9 @@ async function saveToSupabaseV2() {
       const productNo = (db.order_number || '').split('-').slice(0, 3).join('-') || null;
 
       // V열 배송 타입 파싱 (COUPANG / PERSONAL / DIRECT)
+      console.log(`[V2 item#${index}] coupang_shipment_size 원본값:`, JSON.stringify(db.coupang_shipment_size));
       const shipment = parseShipmentInfo(db.coupang_shipment_size);
+      console.log(`[V2 item#${index}] parseShipmentInfo 결과:`, JSON.stringify(shipment));
 
       return {
         order_id: ftOrderId,
