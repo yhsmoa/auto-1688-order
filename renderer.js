@@ -570,7 +570,7 @@ function populateFtUserSelect() {
   ftUsersData.forEach(user => {
     const option = document.createElement('option');
     option.value = user.id;
-    option.textContent = `${user.full_name} ${user.user_code}`;
+    option.textContent = `${user.vender_name || user.full_name} ${user.user_code}`;
     option.dataset.userCode = user.user_code;
     option.dataset.fullName = user.full_name;
     option.dataset.phone = user.phone || '';
