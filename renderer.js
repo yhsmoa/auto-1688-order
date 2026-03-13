@@ -2850,6 +2850,7 @@ async function exportFailedOrdersV2() {
         site_url: db.site_url || null,                               // L col
         note: db.korea_note || null,                                 // Q col
         fail_reason: db.china_note || order.reason || null,          // R col (비고란)
+        order_no: db.order_code || null,                             // S col
         option_id: db.option_id || null,                             // U col
         shipment_info: db.coupang_shipment_size || null,             // V col
         composition: db.composition || null,                         // W col
