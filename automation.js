@@ -1383,6 +1383,14 @@ function checkColorMatch(cartColor, orderColor) {
     return { match: false, type: 'partial', cartValue: cartColor };
   }
 
+  // 3. 단위(cm, 码 등) 제거 후 비교 (리버스 검수에서 사이즈가 color 자리에 올 때)
+  const sizeUnits = /\s*(cm|码|岁|个月|mm|m|號|号|yd|inch|寸)\s*/gi;
+  const cartStripped = normalizedCart.replace(sizeUnits, '').trim();
+  const orderStripped = normalizedOrder.replace(sizeUnits, '').trim();
+  if (cartStripped && orderStripped && cartStripped === orderStripped) {
+    return { match: true, type: 'unit-normalize' };
+  }
+
   // 완전히 다름
   return { match: false, type: 'not-found', cartValue: cartColor };
 }
