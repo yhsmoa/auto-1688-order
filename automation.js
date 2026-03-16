@@ -1338,11 +1338,11 @@ function checkSizeMatch(cartSize, orderSize) {
     return { match: false, type: 'partial', cartValue: cartSize };
   }
 
-  // 5. 숫자 추출 비교 - 불허용 (불일치로 표시, 카트 값 알려줌)
+  // 5. 숫자 추출 비교 - 단위(cm, 码 등)만 다르고 숫자가 같으면 매칭 성공
   const orderNum = extractNumber(orderSize);
   const cartNum = extractNumber(cartSize);
   if (orderNum && cartNum && orderNum === cartNum) {
-    return { match: false, type: 'number-match', cartValue: cartSize };
+    return { match: true, type: 'number-match', cartValue: cartSize };
   }
 
   // 완전히 다름
