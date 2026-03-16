@@ -1338,11 +1338,19 @@ function checkSizeMatch(cartSize, orderSize) {
     return { match: false, type: 'partial', cartValue: cartSize };
   }
 
-  // 5. 숫자 추출 비교 - 단위(cm, 码 등)만 다르고 숫자가 같으면 매칭 성공
+  // 5. 단위(cm, 码 등) 제거 후 비교 - 단위만 다르고 값이 같으면 매칭 성공
+  const sizeUnits = /\s*(cm|码|岁|个月|mm|m|號|号|yd|inch|寸)\s*/gi;
+  const orderStripped = orderSize.replace(sizeUnits, '').trim();
+  const cartStripped = cartSize.replace(sizeUnits, '').trim();
+  if (orderStripped && cartStripped && orderStripped === cartStripped) {
+    return { match: true, type: 'unit-normalize', cartValue: cartSize };
+  }
+
+  // 6. 숫자 추출 비교 - 불허용 (불일치로 표시, 카트 값 알려줌)
   const orderNum = extractNumber(orderSize);
   const cartNum = extractNumber(cartSize);
   if (orderNum && cartNum && orderNum === cartNum) {
-    return { match: true, type: 'number-match', cartValue: cartSize };
+    return { match: false, type: 'number-match', cartValue: cartSize };
   }
 
   // 완전히 다름
