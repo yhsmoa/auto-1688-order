@@ -3522,8 +3522,31 @@ async function saveToSupabaseV2() {
     return;
   }
 
-  // 총 수량 계산
-  const totalQty = orders.reduce((sum, order) => sum + (order.quantity || 0), 0);
+  // ── 성공 건만 필터링 ([성공] 버튼과 동일 기준) ──
+  const successOrders = orders.filter(order => {
+    if (order.finalComplete !== undefined) {
+      return order.finalComplete === true;
+    }
+    const hasResult = order.status && order.status !== 'pending';
+    const hasReview = order.reviewStatus && order.reviewStatus !== '';
+    const resultTrue = order.status === 'success';
+    const reviewTrue = order.reviewStatus === 'ok';
+
+    if (hasResult && hasReview) {
+      return resultTrue && reviewTrue;
+    } else if (!hasResult && hasReview) {
+      return reviewTrue;
+    }
+    return false;
+  });
+
+  if (successOrders.length === 0) {
+    alert('저장할 성공 데이터가 없습니다.');
+    return;
+  }
+
+  // 총 수량 계산 (성공 건 기준)
+  const totalQty = successOrders.reduce((sum, order) => sum + (order.quantity || 0), 0);
 
   // 버튼 로딩 상태
   if (saveBtn) {
@@ -3620,7 +3643,7 @@ async function saveToSupabaseV2() {
 
     // product_no별 UUID 생성 (같은 product_no → 같은 product_id)
     const productIdMap = new Map();
-    orders.forEach(order => {
+    successOrders.forEach(order => {
       const db = order.dbData || {};
       const productNo = (db.order_number || '').split('-').slice(0, 3).join('-') || null;
       if (productNo && !productIdMap.has(productNo)) {
@@ -3628,7 +3651,7 @@ async function saveToSupabaseV2() {
       }
     });
 
-    const itemsToInsert = orders.map((order, index) => {
+    const itemsToInsert = successOrders.map((order, index) => {
       const db = order.dbData || {};
       const productNo = (db.order_number || '').split('-').slice(0, 3).join('-') || null;
 
@@ -3702,7 +3725,7 @@ async function saveToSupabaseV2() {
     const savedItemCount = verifyItems ? verifyItems.length : 0;
     console.log(`✓ V2 저장 검증 완료: ft_orders 1건, ft_order_items ${savedItemCount}건`);
 
-    alert(`V2 저장 완료!\n\n주문코드: ${orderCode}\nft_orders ID: ${ftOrderId}\nft_order_items: ${savedItemCount}건 저장\n총 수량: ${totalQty}`);
+    alert(`V2 저장 완료!\n\n주문코드: ${orderCode}\nft_orders ID: ${ftOrderId}\n총 ${orders.length}건 중 ${successOrders.length}건 성공 데이터 저장\n총 수량: ${totalQty}`);
 
     isDataSaved = true;
     stepStatus.save = true;
@@ -3848,6 +3871,21 @@ async function processDeductExcelV2(file) {
     if (excelOrderCodes.size === 0) {
       alert('엑셀 파일의 AD열에서 주문코드를 찾을 수 없습니다.');
       return;
+    }
+
+    // ── AD열 user_code 검증 (드롭박스 선택 유저와 일치 확인) ──
+    const ftUserSelect = document.getElementById('ftUserSelect');
+    const selectedUserCode = ftUserSelect.selectedOptions[0]?.dataset.userCode || '';
+
+    if (selectedUserCode) {
+      const firstAdCode = [...excelOrderCodes][0];
+      const adPrefix = firstAdCode.replace(/^OR/, '');
+      const adUserCode = adPrefix.replace(/\d{6}.*$/, '');
+
+      if (adUserCode && adUserCode !== selectedUserCode) {
+        alert(`유저 코드가 일치하지 않습니다.\n\n엑셀 AD열: ${adUserCode}\n선택된 유저: ${selectedUserCode}`);
+        return;
+      }
     }
 
     // ── G열, I열, U열 합계 계산 (병합 셀 고려) ──
