@@ -3922,8 +3922,7 @@ async function processDeductExcelV2(file) {
     console.log('service_fee (6%):', service_fee);
     console.log('total_amount (합계):', total_amount);
 
-    // ── 선택된 ft_user 정보 가져오기 ──
-    const ftUserSelect = document.getElementById('ftUserSelect');
+    // ── 선택된 ft_user 정보 가져오기 (ftUserSelect는 위에서 이미 선언됨) ──
     const selectedOption = ftUserSelect ? ftUserSelect.selectedOptions[0] : null;
 
     if (!ftUserSelect || !ftUserSelect.value) {
