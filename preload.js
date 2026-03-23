@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('api', {
   onReviewProgress: (callback) => ipcRenderer.on('review-progress', (event, data) => callback(data)),
   stopProcessing: () => ipcRenderer.send('stop-processing'),
   inputRefCodes: (groupedCodes) => ipcRenderer.invoke('input-ref-codes', groupedCodes),
+  inputRefCodesV2: (groupedCodes) => ipcRenderer.invoke('input-ref-codes-v2', groupedCodes),
   openLoginBrowser: () => ipcRenderer.invoke('open-login-browser'),
   // Supabase 환경 변수
   getEnv: (key) => process.env[key],

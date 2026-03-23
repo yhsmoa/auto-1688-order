@@ -2999,6 +2999,116 @@ async function inputRefCodes() {
   }
 }
 
+// ========== 참조코드 입력 V2 (카트 → 결산 → 참조코드 → 주소 선택 전체 워크플로우) ==========
+async function inputRefCodesV2() {
+  // ── ft_users 유저 선택 확인 및 user_code 추출 ──
+  const ftUserSelect = document.getElementById('ftUserSelect');
+  if (!ftUserSelect || !ftUserSelect.value) {
+    alert('유저를 선택해주세요.');
+    return;
+  }
+  const userCode = ftUserSelect.selectedOptions[0]?.dataset.userCode || '';
+  if (!userCode) {
+    alert('선택된 유저의 user_code가 없습니다.');
+    return;
+  }
+
+  // ── 성공한 주문만 필터링 (기존 inputRefCodes와 동일 기준) ──
+  const successOrders = orders.filter(order => {
+    if (order.finalComplete !== undefined) {
+      return order.finalComplete === true;
+    }
+    const hasResult = order.status && order.status !== 'pending';
+    const hasReview = order.reviewStatus && order.reviewStatus !== '';
+    const resultTrue = order.status === 'success';
+    const reviewTrue = order.reviewStatus === 'ok';
+    if (hasResult && hasReview) {
+      return resultTrue && reviewTrue;
+    } else if (!hasResult && hasReview) {
+      return reviewTrue;
+    }
+    return false;
+  });
+
+  if (successOrders.length === 0) {
+    alert('참조코드를 입력할 성공 주문이 없습니다.');
+    return;
+  }
+
+  // ── offer_id별 그룹화 (기존과 동일) ──
+  const groupedData = {};
+  successOrders.forEach((order, idx) => {
+    const match = order.url.match(/offer\/(\d+)\.html/);
+    const offerId = match ? match[1] : '';
+    if (!offerId) return;
+
+    if (!groupedData[offerId]) {
+      groupedData[offerId] = {
+        items: [],
+        orderIndexes: []
+      };
+    }
+
+    const orderNo = order.orderNo || '';
+    const orderNoParts = orderNo.split('-');
+    const orderNoDatePart = orderNoParts.slice(0, 2).join('-');
+    const orderNoRestPart = orderNoParts.slice(2).join('-');
+    const originalIndex = orders.indexOf(order);
+
+    groupedData[offerId].items.push({
+      color: order.color,
+      size: order.size,
+      orderCode: order.orderCode || '',
+      orderNoDatePart: orderNoDatePart,
+      orderNoRestPart: orderNoRestPart,
+      quantity: order.quantity,
+      orderIndex: originalIndex
+    });
+
+    groupedData[offerId].orderIndexes.push(originalIndex);
+  });
+
+  const groupCount = Object.keys(groupedData).length;
+  if (groupCount === 0) {
+    alert('참조코드가 있는 주문이 없습니다.');
+    return;
+  }
+
+  console.log('V2 참조코드 그룹:', groupedData);
+  console.log('V2 user_code:', userCode);
+
+  // userCode를 groupedData에 내장 (V1과 동일한 단일 객체 전달 패턴)
+  groupedData._userCode = userCode;
+
+  // ── 자동화 실행 ──
+  try {
+    document.getElementById('btnRefCodeV2').disabled = true;
+    const result = await window.api.inputRefCodesV2(groupedData);
+
+    // 성공한 항목 표시
+    if (result.successOrderIndexes && result.successOrderIndexes.length > 0) {
+      result.successOrderIndexes.forEach(idx => {
+        if (idx >= 0 && idx < orders.length) {
+          orders[idx].refCodeSuccess = true;
+        }
+      });
+    }
+
+    renderOrderList();
+    stepStatus.refCode = true;
+    updateButtonSteps();
+
+    // 빈 textarea 경고
+    if (result.emptyTextareaCount > 0) {
+      showEmptyTextareaWarning(result.emptyTextareaCount, result.totalTextareas, result.emptySellerNames);
+    }
+  } catch (error) {
+    alert('V2 참조코드 입력 중 오류가 발생했습니다: ' + error.message);
+  } finally {
+    document.getElementById('btnRefCodeV2').disabled = false;
+  }
+}
+
 // 빈 textarea 경고 표시 함수
 function showEmptyTextareaWarning(emptyCount, totalCount, emptySellerNames = []) {
   // 기존 경고 제거

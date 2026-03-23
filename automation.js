@@ -136,7 +136,18 @@ function findSizeMatch(searchSize, availableSizes) {
     return { match: exactMatch[0], type: 'exact' };
   }
 
-  // 2. 부분 일치 (searchSize를 포함하는 옵션)
+  // 2. startsWith 경계 매칭 (사이즈코드 + 비영숫자 경계)
+  const escaped = searchSize.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const startsWithRegex = new RegExp(`^${escaped}(?![A-Za-z0-9])`, 'i');
+  const startsWithMatch = availableSizes.filter(s => startsWithRegex.test(s.text));
+  if (startsWithMatch.length === 1) {
+    return { match: startsWithMatch[0], type: 'startsWith' };
+  }
+  if (startsWithMatch.length > 1) {
+    return { match: null, type: 'multiple', count: startsWithMatch.length };
+  }
+
+  // 3. 부분 일치 (searchSize를 포함하는 옵션)
   const partialMatch = availableSizes.filter(s => s.text.includes(searchSize));
   if (partialMatch.length === 1) {
     return { match: partialMatch[0], type: 'partial' };
@@ -972,15 +983,37 @@ async function startReview(orders, onReviewProgress) {
     // 4. "全选" 체크박스 선택
     console.log('\nStep 4: Selecting "全选" checkbox...');
     await selectAllCheckbox(page);
-
-    // 체크박스 상태 업데이트 대기
     await page.waitForTimeout(1000);
-    console.log('+ Waited for checkbox state update');
 
-    // 5. 카트 데이터 추출
+    // 5. 카트 데이터 추출 (체크 상태 미반영 시 재시도)
     console.log('\nStep 5: Extracting cart data...');
-    const cartItems = await extractCartData(page);
+    let cartItems = await extractCartData(page);
     console.log(`+ Extracted ${cartItems.length} items from cart`);
+
+    const maxRetries = 5;
+    for (let retry = 1; retry <= maxRetries; retry++) {
+      const activeItems = cartItems.filter(item => !item.isDisabled);
+      const uncheckedItems = activeItems.filter(item => !item.isChecked);
+      const uncheckedRate = activeItems.length > 0 ? uncheckedItems.length / activeItems.length : 0;
+
+      console.log(`  Checkbox status: ${activeItems.length - uncheckedItems.length}/${activeItems.length} checked (unchecked rate: ${(uncheckedRate * 100).toFixed(1)}%)`);
+
+      if (uncheckedRate === 0) {
+        console.log('+ All checkboxes checked');
+        break;
+      }
+
+      if (uncheckedRate < 1.0) {
+        console.log('+ Some checkboxes unchecked - proceeding (may be intentional)');
+        break;
+      }
+
+      // 전부 체크 안 됨 → 로딩 중으로 판단, 재시도
+      console.log(`  All checkboxes unchecked - likely still loading (retry ${retry}/${maxRetries})...`);
+      await page.waitForTimeout(2000);
+      cartItems = await extractCartData(page);
+      console.log(`+ Re-extracted ${cartItems.length} items from cart`);
+    }
 
     // 디버깅: 추출된 아이템 로그
     if (cartItems.length > 0) {
@@ -2051,4 +2084,566 @@ async function openLoginBrowser() {
   return { success: true };
 }
 
-module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, openLoginBrowser };
+// ========================================
+// 참조코드 입력 V2 (카트 → 결산 → 참조코드 → 주소 선택 전체 워크플로우)
+// ========================================
+async function inputRefCodesV2(groupedData, userCode) {
+  console.log('\n========================================');
+  console.log('INPUT REF CODES V2 STARTED');
+  console.log(`Groups to process: ${Object.keys(groupedData).length}`);
+  console.log(`User code: ${userCode}`);
+  console.log('========================================');
+
+  // ── Section 1: Chrome 연결 ──
+  console.log('\nSection 1: Connecting to Chrome...');
+  let browser = await tryConnectChrome(1);
+
+  if (!browser) {
+    console.log('X Chrome not connected');
+    throw new Error('Chrome not connected. Please ensure the browser is still open.');
+  }
+
+  console.log('+ Chrome connected\n');
+
+  const context = browser.contexts()[0];
+  const pages = context.pages();
+  let page = pages[pages.length - 1];
+
+  const successGroups = [];
+  const successOrderIndexes = [];
+  let emptyTextareaCount = 0;
+  const emptySellerNames = [];
+
+  try {
+    // ── Section 2: 카트 페이지 접속 + 로딩 대기 ──
+    console.log('Section 2: Navigating to cart page...');
+    await page.goto('https://cart.1688.com/cart.htm', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+    console.log('+ Navigated to cart page');
+
+    // 카트 아이템이 로드될 때까지 대기
+    try {
+      await page.waitForSelector('[class*="shop-container--container"]', { timeout: 10000 });
+      console.log('+ Shop containers found');
+    } catch (e) {
+      console.log('  Warning: Shop containers not found, waiting anyway...');
+    }
+    await page.waitForTimeout(5000);
+    console.log('+ Page fully loaded (5s wait)');
+
+    // ── Section 3: 상점별 체크박스 선택 ──
+    // 왜 "全选"이 아닌 상점별 클릭인가:
+    // - 카트 페이지는 lazy loading으로 뷰포트 밖 상점이 미렌더링될 수 있음
+    // - 상점별 스크롤 → 렌더링 확인 → 클릭 → 폴링으로 100% 확실한 체크 보장
+    console.log('\nSection 3: Selecting shop checkboxes one by one...');
+    await selectShopCheckboxes(page);
+
+    // ── Section 4: 结算 버튼 클릭 + 주문확인 페이지 대기 ──
+    console.log('\nSection 4: Clicking 结算 button...');
+    const submitBtn = page.locator('[class*="bottom-bar--submitBtn"]');
+    const submitBtnCount = await submitBtn.count();
+    console.log(`  Found ${submitBtnCount} submit button(s)`);
+
+    if (submitBtnCount === 0) {
+      throw new Error('结算 button not found on page');
+    }
+
+    // 결산 버튼 클릭 전 스크롤 (하단 고정 바에 있으므로 보통 보임)
+    await submitBtn.first().click();
+    console.log('+ 结算 button clicked');
+
+    // 주문확인 페이지 로딩 대기
+    console.log('  Waiting for order confirmation page...');
+    try {
+      await page.waitForURL('**/order/confirm*', { timeout: 30000 });
+      console.log('+ URL changed to order confirmation page');
+    } catch (e) {
+      console.log('  Warning: URL pattern not matched, waiting for page elements...');
+    }
+
+    // 주문확인 페이지 핵심 요소 대기
+    try {
+      await page.waitForSelector('.order-inner', { timeout: 15000 });
+      console.log('+ Order inner elements loaded');
+    } catch (e) {
+      console.log('  Warning: .order-inner not found, trying alternative...');
+      await page.waitForTimeout(5000);
+    }
+    await page.waitForTimeout(2000);
+    console.log('+ Order confirmation page ready');
+
+    // ── Section 5: 참조코드 입력 ──
+    // 기존 inputRefCodes의 참조코드 입력 로직과 동일
+    console.log('\nSection 5: Inputting reference codes...');
+
+    const orderInners = page.locator('.order-inner');
+    const orderCount = await orderInners.count();
+    console.log(`  Found ${orderCount} order(s) on page`);
+
+    // 각 order-inner 처리
+    for (let orderIdx = 0; orderIdx < orderCount; orderIdx++) {
+      const orderInner = orderInners.nth(orderIdx);
+      console.log(`\n  === Processing Order ${orderIdx + 1}/${orderCount} ===`);
+
+      const offerContainers = orderInner.locator('.offer-container');
+      const offerCount = await offerContainers.count();
+      console.log(`  Found ${offerCount} offer(s) in this order`);
+
+      // 이 order에 입력할 모든 참조코드 수집
+      const allRefCodes = [];
+
+      // 각 offer-container 처리
+      for (let offerIdx = 0; offerIdx < offerCount; offerIdx++) {
+        const offerContainer = offerContainers.nth(offerIdx);
+
+        // offer_id 추출
+        const offerLink = offerContainer.locator('a[href*="offer/"]').first();
+        const hasLink = await offerLink.count() > 0;
+
+        if (!hasLink) {
+          console.log(`  Offer ${offerIdx + 1}: No offer link found`);
+          continue;
+        }
+
+        const href = await offerLink.getAttribute('href');
+        const offerIdMatch = href.match(/offer\/(\d+)\.html/);
+
+        if (!offerIdMatch) {
+          console.log(`  Offer ${offerIdx + 1}: Could not extract offer_id from ${href}`);
+          continue;
+        }
+
+        const offerId = offerIdMatch[1];
+        console.log(`\n  --- Offer ${offerIdx + 1}: ${offerId} ---`);
+
+        // 이 offer_id가 우리 데이터에 있는지 확인
+        const groupInfo = groupedData[offerId];
+        if (!groupInfo) {
+          console.log(`    X Not in our data, skipping`);
+          continue;
+        }
+
+        console.log(`    Found in data with ${groupInfo.items.length} item(s)`);
+
+        // cargo-container 찾기
+        const cargoContainers = offerContainer.locator('.cargo-container');
+        const cargoCount = await cargoContainers.count();
+        console.log(`    Found ${cargoCount} cargo(s)`);
+
+        // 각 cargo 처리
+        for (let cargoIdx = 0; cargoIdx < cargoCount; cargoIdx++) {
+          const cargoContainer = cargoContainers.nth(cargoIdx);
+
+          // 옵션 정보 추출
+          const cargoSpec = cargoContainer.locator('.cargo-spec');
+          const hasSpec = await cargoSpec.count() > 0;
+
+          if (!hasSpec) {
+            console.log(`      Cargo ${cargoIdx + 1}: No spec found`);
+            continue;
+          }
+
+          const specText = await cargoSpec.textContent();
+          console.log(`      Cargo ${cargoIdx + 1} spec: "${specText}"`);
+
+          // 색상과 사이즈 추출
+          let color = '';
+          let size = '';
+
+          const specParts = specText.split(';').map(s => s.trim());
+          for (const part of specParts) {
+            if (part.includes('颜色:') || part.includes('色:')) {
+              color = part.replace(/颜色:|色:/g, '').trim();
+            } else if (part.includes('尺码:') || part.includes('码:')) {
+              size = part.replace(/尺码:|码:/g, '').trim();
+            }
+          }
+
+          console.log(`      Extracted: Color="${color}", Size="${size}"`);
+
+          // 프리사이즈 동의어 목록
+          const freeSizeAliases = ['FREE', 'free', 'Free', '균码', '均码', 'F', '프리', '프리사이즈', 'FREESIZE', 'OneSize', 'OS'];
+          const isFreeSize = (s) => freeSizeAliases.some(alias => s.toUpperCase().includes(alias.toUpperCase()));
+
+          // 매칭되는 아이템 찾기 (공백 정규화 + 부분 매칭)
+          const normalizedColor = color.replace(/\s+/g, ' ').trim();
+
+          const matchingItems = groupInfo.items.filter(item => {
+            const normalizedItemColor = (item.color || '').replace(/\s+/g, ' ').trim();
+            const colorMatch = normalizedItemColor === normalizedColor;
+
+            let sizeMatch = false;
+            const normalizedItemSize = (item.size || '').replace(/\s+/g, ' ').trim();
+            const normalizedSize = size.replace(/\s+/g, ' ').trim();
+            const itemIsFree = isFreeSize(normalizedItemSize);
+            const cargoIsFree = isFreeSize(normalizedSize);
+
+            if (itemIsFree && cargoIsFree) {
+              sizeMatch = true;
+            } else if (normalizedSize.includes(normalizedItemSize) || normalizedItemSize.includes(normalizedSize)) {
+              sizeMatch = true;
+            } else if (normalizedItemSize === normalizedSize) {
+              sizeMatch = true;
+            }
+
+            console.log(`        Comparing Item(${normalizedItemColor}|${normalizedItemSize}) vs Cargo(${normalizedColor}|${normalizedSize}) = ${colorMatch && sizeMatch}`);
+            return colorMatch && sizeMatch;
+          });
+
+          if (matchingItems.length > 0) {
+            console.log(`      Found ${matchingItems.length} matching item(s)`);
+            matchingItems.forEach(item => {
+              if (item.orderIndex !== undefined && successOrderIndexes.includes(item.orderIndex)) {
+                console.log(`        Skipped (already added): orderIndex ${item.orderIndex}`);
+                return;
+              }
+
+              allRefCodes.push({
+                orderCode: item.orderCode,
+                orderNoDatePart: item.orderNoDatePart,
+                orderNoRestPart: item.orderNoRestPart,
+                quantity: item.quantity,
+                orderIndex: item.orderIndex
+              });
+
+              if (item.orderIndex !== undefined) {
+                successOrderIndexes.push(item.orderIndex);
+              }
+              console.log(`        Added: ${item.orderCode} | ${item.orderNoDatePart} | ${item.orderNoRestPart}:${item.quantity} (orderIndex: ${item.orderIndex})`);
+            });
+
+            if (!successGroups.includes(offerId)) {
+              successGroups.push(offerId);
+            }
+          } else {
+            console.log(`      X No matching items`);
+          }
+        }
+      }
+
+      // 이 order에 입력할 참조코드가 있으면 textarea에 입력
+      if (allRefCodes.length > 0) {
+        console.log(`\n  Total ${allRefCodes.length} ref code(s) to input for this order`);
+
+        // 원래 주문 목록 순서대로 정렬
+        allRefCodes.sort((a, b) => a.orderIndex - b.orderIndex);
+        console.log('  Sorted by orderIndex:', allRefCodes.map(i => `${i.orderNoRestPart}:${i.quantity} (idx:${i.orderIndex})`).join(', '));
+
+        // 같은 orderCode + orderNoDatePart 끼리 그룹화
+        const groupedRefCodes = [];
+        const groupMap = new Map();
+
+        allRefCodes.forEach(item => {
+          const key = `${item.orderCode}|${item.orderNoDatePart}`;
+          if (!groupMap.has(key)) {
+            const group = {
+              orderCode: item.orderCode,
+              orderNoDatePart: item.orderNoDatePart,
+              restParts: []
+            };
+            groupMap.set(key, group);
+            groupedRefCodes.push(group);
+          }
+          groupMap.get(key).restParts.push(`${item.orderNoRestPart}:${item.quantity}`);
+        });
+
+        // 최종 텍스트 생성
+        const memoLines = groupedRefCodes.map(group => {
+          return `${group.orderCode} | ${group.orderNoDatePart} | ${group.restParts.join(', ')}`;
+        });
+        const memoText = memoLines.join('\n');
+        console.log(`  Combined memo text:\n${memoText}`);
+
+        // order-footer의 textarea 찾기
+        const textarea = orderInner.locator('.order-footer .leave-message-container .q-textarea textarea').first();
+        const textareaFound = await textarea.count() > 0;
+
+        console.log(`  Textarea in order-footer found: ${textareaFound}`);
+
+        if (textareaFound) {
+          console.log(`  Attempting to input ref codes...`);
+          await textarea.scrollIntoViewIfNeeded();
+          await page.waitForTimeout(300);
+          await textarea.click();
+          await page.waitForTimeout(200);
+          await textarea.fill(memoText);
+          await page.waitForTimeout(500);
+
+          // 입력 확인
+          const inputValue = await textarea.inputValue();
+          console.log(`  Input verification: ${inputValue.length} chars`);
+
+          if (inputValue === memoText) {
+            console.log(`  + Ref codes inputted successfully`);
+          } else {
+            console.log(`  ! Input may not match exactly`);
+            console.log(`  Expected length: ${memoText.length}, Got: ${inputValue.length}`);
+          }
+        } else {
+          console.log(`  X Textarea not found in order-footer`);
+        }
+      } else {
+        console.log(`\n  No ref codes to input for this order`);
+      }
+    }
+
+    // 빈 textarea 확인
+    console.log('\n--- Checking for empty textareas ---');
+    const failedOrderIndexes = [];
+
+    const orderGroups = page.locator('.order-group-container');
+    const orderGroupCount = await orderGroups.count();
+
+    for (let orderIdx = 0; orderIdx < orderGroupCount; orderIdx++) {
+      const orderGroup = orderGroups.nth(orderIdx);
+
+      const shopLink = orderGroup.locator('.order-group-header .shop-title .shop-link').first();
+      let sellerName = 'Unknown Seller';
+
+      if (await shopLink.count() > 0) {
+        sellerName = await shopLink.innerText().catch(() => 'Unknown Seller');
+        sellerName = sellerName.trim();
+      }
+
+      const textarea = orderGroup.locator('.order-footer .leave-message-container .q-textarea textarea').first();
+
+      if (await textarea.count() > 0) {
+        const value = await textarea.inputValue();
+        if (!value || value.trim() === '') {
+          emptyTextareaCount++;
+          emptySellerNames.push(sellerName);
+          console.log(`  Order ${orderIdx + 1} (${sellerName}): EMPTY`);
+
+          const offerContainers = orderGroup.locator('.offer-container');
+          const offerCount = await offerContainers.count();
+          for (let offerIdx = 0; offerIdx < offerCount; offerIdx++) {
+            const offerContainer = offerContainers.nth(offerIdx);
+            const offerLink = offerContainer.locator('a[href*="offer/"]').first();
+            if (await offerLink.count() > 0) {
+              const href = await offerLink.getAttribute('href');
+              const offerIdMatch = href.match(/offer\/(\d+)\.html/);
+              if (offerIdMatch) {
+                const offerId = offerIdMatch[1];
+                const groupInfo = groupedData[offerId];
+                if (groupInfo && groupInfo.orderIndexes) {
+                  failedOrderIndexes.push(...groupInfo.orderIndexes);
+                }
+              }
+            }
+          }
+        } else {
+          console.log(`  Order ${orderIdx + 1} (${sellerName}): Has content (${value.length} chars)`);
+        }
+      }
+    }
+
+    const totalTextareas = orderGroupCount;
+
+    // ── Section 6: 更改地址 클릭 + 주소 선택 ──
+    console.log('\nSection 6: Address selection...');
+    await selectAddress(page, userCode);
+
+    // ── Section 7: 결과 반환 ──
+    console.log('\n========================================');
+    console.log('INPUT REF CODES V2 COMPLETED');
+    console.log(`Success groups: ${successGroups.length}/${Object.keys(groupedData).length}`);
+    console.log(`Success order indexes: ${successOrderIndexes.length}`, successOrderIndexes);
+    console.log(`Empty textareas: ${emptyTextareaCount}/${totalTextareas}`);
+    if (emptySellerNames.length > 0) {
+      console.log('Empty sellers:', emptySellerNames);
+    }
+    console.log('Failed order indexes:', failedOrderIndexes);
+    console.log('========================================');
+
+    return { success: true, successGroups, successOrderIndexes, emptyTextareaCount, totalTextareas, emptySellerNames, failedOrderIndexes };
+
+  } catch (error) {
+    console.log(`\nX Input ref codes V2 failed: ${error.message}`);
+    console.error(error.stack);
+    throw error;
+  }
+}
+
+// ========================================
+// 상점별 체크박스 선택 함수 (카트 페이지)
+// - 全选이 아닌 상점별 개별 클릭하는 이유:
+//   1. lazy loading으로 뷰포트 밖 상점이 미렌더링될 수 있음
+//   2. 상점별 스크롤 → 뷰포트 진입 → 렌더링 확인 → 클릭 → 폴링으로 100% 확실
+//   3. 전체선택 클릭 시 체크 상태가 DOM에 반영되지 않는 타이밍 문제 회피
+// ========================================
+async function selectShopCheckboxes(page) {
+  // CSS 모듈 해시 변경에 대응하기 위해 부분 매칭 셀렉터 사용
+  const shopSelector = '[class*="shop-container--container"]';
+  const sellerCheckboxSelector = '[class*="companyWrapper"] .next-checkbox-input';
+  const itemCheckboxSelector = '[class*="item-group-container--container"] .next-checkbox-input';
+
+  const shopCount = await page.locator(shopSelector).count();
+  const targetCount = Math.min(shopCount, 24);
+
+  console.log(`  Found ${shopCount} shop(s), processing ${targetCount}`);
+
+  for (let i = 0; i < targetCount; i++) {
+    const shopBlock = page.locator(shopSelector).nth(i);
+
+    // 상점 위치로 스크롤
+    await shopBlock.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(500);
+
+    // 판매자 체크박스 찾기
+    const sellerCheckbox = shopBlock.locator(sellerCheckboxSelector).first();
+    const sellerCheckboxCount = await sellerCheckbox.count();
+
+    if (sellerCheckboxCount === 0) {
+      console.log(`  [${i + 1}/${targetCount}] No seller checkbox found, skipping`);
+      continue;
+    }
+
+    // 이미 체크 여부 확인
+    const isAlreadyChecked = await page.evaluate(({ shopIndex, shopSel }) => {
+      const shop = document.querySelectorAll(shopSel)[shopIndex];
+      if (!shop) return false;
+      const wrapper = shop.querySelector('[class*="companyWrapper"] .next-checkbox-wrapper');
+      return wrapper && wrapper.classList.contains('checked');
+    }, { shopIndex: i, shopSel: shopSelector });
+
+    if (isAlreadyChecked) {
+      console.log(`  [${i + 1}/${targetCount}] Already checked, skipping`);
+      await page.waitForTimeout(500);
+      continue;
+    }
+
+    // 하위 아이템 체크박스 개수 확인 (클릭 전에 수집)
+    const itemCheckboxCount = await shopBlock.locator(itemCheckboxSelector).count();
+
+    console.log(`  [${i + 1}/${targetCount}] Clicking seller checkbox (${itemCheckboxCount} items)...`);
+    await sellerCheckbox.click({ force: true });
+
+    // 하위 아이템 전체 체크될 때까지 폴링
+    // - 500ms 간격 확인, 최대 20초 (40회)
+    // - 체크 확인: label.classList.contains('checked') 또는 aria-checked="true"
+    let allChecked = false;
+    for (let checkCount = 0; checkCount < 40; checkCount++) {
+      await page.waitForTimeout(500);
+
+      allChecked = await page.evaluate(({ shopIndex, shopSel, itemSel }) => {
+        const shop = document.querySelectorAll(shopSel)[shopIndex];
+        if (!shop) return true;
+        const itemCheckboxes = shop.querySelectorAll(itemSel);
+        if (itemCheckboxes.length === 0) return true;
+
+        for (const cb of itemCheckboxes) {
+          const label = cb.closest('.next-checkbox-wrapper');
+          const isChecked = (label && label.classList.contains('checked'))
+                         || cb.getAttribute('aria-checked') === 'true';
+          if (!isChecked) return false;
+        }
+        return true;
+      }, { shopIndex: i, shopSel: shopSelector, itemSel: itemCheckboxSelector });
+
+      if (allChecked) break;
+    }
+
+    if (allChecked) {
+      console.log(`  [${i + 1}/${targetCount}] All items checked`);
+    } else {
+      console.log(`  [${i + 1}/${targetCount}] Warning: Timeout - some items may not be checked`);
+    }
+
+    // 안정화 대기 후 다음 상점
+    await page.waitForTimeout(1500);
+  }
+
+  console.log(`+ Shop checkbox selection completed (${targetCount} shops processed)`);
+}
+
+// ========================================
+// 주소 선택 함수 (주문확인 페이지)
+// - 更改地址 클릭 → 모달에서 user_code 매칭 주소 선택 → 确定 클릭
+// ========================================
+async function selectAddress(page, userCode) {
+  // "更改地址" 버튼 클릭
+  console.log('  Clicking 更改地址 button...');
+  try {
+    const addressBtn = page.locator('.address-action:has-text("更改地址")');
+    if (await addressBtn.count() > 0) {
+      await addressBtn.first().click();
+      console.log('  + 更改地址 button clicked');
+      await page.waitForTimeout(1000);
+    } else {
+      console.log('  X 更改地址 button not found');
+      return;
+    }
+  } catch (e) {
+    console.log(`  X 更改地址 button click failed: ${e.message}`);
+    return;
+  }
+
+  // 주소 모달 로딩 대기
+  console.log('  Waiting for address modal...');
+  try {
+    await page.waitForSelector('.address-subject', { timeout: 10000 });
+    console.log('  + Address modal loaded');
+  } catch (e) {
+    console.log('  X Address modal not found');
+    return;
+  }
+  await page.waitForTimeout(500);
+
+  // 주소 목록에서 user_code 매칭 항목 찾기
+  // address-name 텍스트의 끝이 userCode와 일치하는 항목 선택
+  console.log(`  Looking for address ending with "${userCode}"...`);
+
+  const matchResult = await page.evaluate((targetUserCode) => {
+    const addressSubjects = document.querySelectorAll('.address-subject');
+    const results = [];
+
+    for (let i = 0; i < addressSubjects.length; i++) {
+      const nameEl = addressSubjects[i].querySelector('.address-name');
+      if (!nameEl) continue;
+
+      const nameText = nameEl.textContent.trim();
+      results.push(nameText);
+
+      if (nameText.endsWith(targetUserCode)) {
+        return { found: true, index: i, name: nameText, total: addressSubjects.length };
+      }
+    }
+
+    return { found: false, names: results, total: addressSubjects.length };
+  }, userCode);
+
+  if (!matchResult.found) {
+    console.log(`  X No address found matching user_code "${userCode}"`);
+    console.log(`  Available addresses: ${matchResult.names?.join(', ')}`);
+    console.log('  Manual address selection required');
+    return;
+  }
+
+  console.log(`  + Found matching address: "${matchResult.name}" (${matchResult.index + 1}/${matchResult.total})`);
+
+  // 매칭된 주소 클릭
+  const addressSubjects = page.locator('.address-subject');
+  const targetAddress = addressSubjects.nth(matchResult.index);
+  await targetAddress.click();
+  await page.waitForTimeout(500);
+  console.log('  + Address selected');
+
+  // "确 定" 버튼 클릭하여 주소 확정
+  console.log('  Clicking 确定 button...');
+  try {
+    const confirmBtn = page.locator('.address-button-group .ant-btn-primary');
+    if (await confirmBtn.count() > 0) {
+      await confirmBtn.first().click();
+      await page.waitForTimeout(500);
+      console.log('  + Address confirmed (确定 clicked)');
+    } else {
+      console.log('  X 确定 button not found');
+    }
+  } catch (e) {
+    console.log(`  X 确定 button click failed: ${e.message}`);
+  }
+}
+
+module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser };

@@ -197,6 +197,14 @@ ipcMain.handle('input-ref-codes', async (event, groupedCodes) => {
   return await inputRefCodes(groupedCodes);
 });
 
+// 참조코드 입력 V2 IPC
+ipcMain.handle('input-ref-codes-v2', async (event, groupedCodes) => {
+  const { inputRefCodesV2 } = require('./automation');
+  const userCode = groupedCodes._userCode || '';
+  delete groupedCodes._userCode;
+  return await inputRefCodesV2(groupedCodes, userCode);
+});
+
 // 로그인 설정용 브라우저 열기 IPC
 ipcMain.handle('open-login-browser', async () => {
   const { openLoginBrowser } = require('./automation');

@@ -1219,7 +1219,10 @@
         <span class="step-arrow">➜</span>
         <button class="btn-step" id="btnReview" onclick="startReview()" disabled>검수</button>
         <span class="step-arrow">➜</span>
-        <button class="btn-step" id="btnRefCode" onclick="inputRefCodes()" disabled>참조코드 입력</button>
+        <div class="step-group" style="flex-direction: column; gap: 4px;">
+          <button class="btn-step" id="btnRefCode" onclick="inputRefCodes()" disabled>참조코드 입력</button>
+          <button class="btn-step" id="btnRefCodeV2" onclick="inputRefCodesV2()">V2 참조코드</button>
+        </div>
         <span class="step-arrow">➜</span>
         <button class="btn-step" id="btnOrderNumber" onclick="registerOrderNumbers()">주문번호 등록</button>
         <input type="file" id="orderNumberFile" accept=".xlsx,.xls" style="display: none;" onchange="handleOrderNumberFile(event)">
