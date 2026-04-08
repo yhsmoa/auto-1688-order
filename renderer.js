@@ -844,6 +844,7 @@ function parseData() {
       // Supabase 저장용 전체 데이터
       dbData: {
         date: new Date().toISOString(),                             // 현재 시간 자동 입력
+        raw_date: parts[0] ? parts[0].trim() : null,               // A열 (MMDD)
         order_number: parts[1] ? parts[1].trim() : null,            // B열
         item_name: parts[2] ? parts[2].trim() : null,               // C열
         option_name: parts[3] ? parts[3].trim() : null,             // D열
@@ -3821,6 +3822,14 @@ async function saveToSupabaseV2() {
         '1688_order_id': db['1688_order_id'] || null,
         price_delivery_cny: db.price_delivery_cny ?? null,
         vendor_option_id: db.option_id || null,              // U열
+        requested_date: (() => {                              // A열 (MMDD → YYYY-MM-DD)
+          const mmdd = db.raw_date || '';
+          if (mmdd.length === 4 && /^\d{4}$/.test(mmdd)) {
+            const year = new Date().getFullYear();
+            return `${year}-${mmdd.slice(0, 2)}-${mmdd.slice(2, 4)}`;
+          }
+          return null;
+        })(),
         user_id: ftUserId,
         status: 'PROCESSING'
       };
