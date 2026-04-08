@@ -203,6 +203,89 @@ function findSizeMatch(searchSize, availableSizes) {
   return { match: null, type: 'not-found' };
 }
 
+// 장바구니 추가 성공 모달 닫기/제거
+async function dismissSuccessModal(page) {
+  try {
+    const closeBtn = page.locator('.ant-modal-close');
+    if (await closeBtn.count() > 0) {
+      await closeBtn.first().click();
+      await page.waitForTimeout(300);
+    }
+  } catch (e) {
+    // close 버튼 없으면 무시
+  }
+
+  // DOM에서 모달 관련 요소 직접 제거
+  await page.evaluate(() => {
+    document.querySelectorAll('.ant-modal-root, .ant-modal-mask').forEach(el => el.remove());
+    document.querySelectorAll('.feedback-dialog-message').forEach(el => {
+      const wrapper = el.closest('.ant-modal-wrap') || el.closest('.ant-modal-root');
+      if (wrapper) wrapper.remove();
+    });
+  }).catch(() => {});
+}
+
+// "Add to Cart" 클릭 후 새로운 성공 모달 감지 (재시도 포함)
+async function clickAndWaitForNewModal(page, addCartBtn, maxRetries = 2) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`  Add to cart attempt ${attempt}/${maxRetries}...`);
+
+    // 1. 기존 모달 제거 (이전 그룹의 잔여 모달 방지)
+    await dismissSuccessModal(page);
+
+    // 2. 모달이 완전히 제거되었는지 확인
+    const preClickCount = await page.locator('.feedback-dialog-message').count();
+    if (preClickCount > 0) {
+      console.log(`  Warning: ${preClickCount} stale modal(s) in DOM, force removing...`);
+      await page.evaluate(() => {
+        document.querySelectorAll('.feedback-dialog-message').forEach(el => {
+          const root = el.closest('.ant-modal-root') || el.closest('.ant-modal-wrap') || el.parentElement;
+          if (root) root.remove();
+        });
+      }).catch(() => {});
+    }
+
+    // 3. 클릭
+    await addCartBtn.first().click();
+
+    // 4. 새로운 성공 모달 대기 (기존 모달은 제거했으므로 새것만 감지됨)
+    try {
+      await page.waitForSelector('.feedback-dialog-message:has-text("加购成功")', {
+        timeout: 8000,
+        state: 'visible'
+      });
+
+      // 5. 더블 체크: 실제로 보이는지 확인
+      const isVisible = await page.locator('.feedback-dialog-message:has-text("加购成功")').isVisible();
+      if (!isVisible) {
+        console.log(`  Warning: Modal found but not visible, retrying...`);
+        if (attempt < maxRetries) continue;
+        return { success: false, error: 'Modal detected but not visible' };
+      }
+
+      console.log(`  SUCCESS! Cart add confirmed.`);
+      return { success: true };
+
+    } catch (e) {
+      console.log(`  Attempt ${attempt}: Success message not found within timeout`);
+
+      // 에러 모달이 떴는지 확인 (예: 재고 부족 등)
+      const errorText = await page.locator('.feedback-dialog-message').first().innerText().catch(() => '');
+      if (errorText) {
+        console.log(`  Modal text: "${errorText}"`);
+        return { success: false, error: `Cart response: ${errorText}` };
+      }
+
+      if (attempt < maxRetries) {
+        console.log(`  Retrying...`);
+        await page.waitForTimeout(1000);
+      }
+    }
+  }
+
+  return { success: false, error: 'Add to cart failed after retries' };
+}
+
 // 단일 주문 처리
 async function processOneOrder(page, order) {
   const { url, color, size, quantity, orderNo } = order;
@@ -446,17 +529,16 @@ async function processOneOrder(page, order) {
     throw new Error('Cart button not found');
   }
 
-  await addCartBtn.first().click();
+  // 기존 모달 정리 후 장바구니 추가 + 새 모달 검증
+  const cartResult = await clickAndWaitForNewModal(page, addCartBtn);
 
-  // 6. Check success message
-  console.log(`  Waiting for success message...`);
-  try {
-    await page.waitForSelector('.feedback-dialog-message:has-text("加购成功")', { timeout: 5000 });
+  if (cartResult.success) {
     console.log(`  SUCCESS!`);
+    await dismissSuccessModal(page);
     return { success: true };
-  } catch (e) {
-    console.log(`  X Success message not found`);
-    throw new Error('Add to cart failed');
+  } else {
+    console.log(`  X Cart add failed: ${cartResult.error}`);
+    throw new Error(cartResult.error || 'Add to cart failed');
   }
 }
 
@@ -574,6 +656,9 @@ async function processGroupOrder(page, group, onProgress) {
     waitUntil: 'domcontentloaded',
     timeout: 30000
   });
+
+  // 이전 그룹의 잔여 모달 정리
+  await dismissSuccessModal(page);
 
   // Invalid page check
   if (page.url().includes('wrongpage.html')) {
@@ -819,26 +904,26 @@ async function processGroupOrder(page, group, onProgress) {
     return;
   }
 
-  await addCartBtn.first().click();
+  // 기존 모달 정리 후 장바구니 추가 + 새 모달 검증
+  const cartResult = await clickAndWaitForNewModal(page, addCartBtn);
 
-  // 성공 메시지 확인
-  console.log(`Waiting for success message...`);
-  try {
-    await page.waitForSelector('.feedback-dialog-message:has-text("加购成功")', { timeout: 5000 });
+  if (cartResult.success) {
     console.log(`SUCCESS! Added to cart`);
 
-    // 성공한 아이템들 완료 처리 (테스트용: 배송비 정보 포함)
     successItems.forEach(item => {
       item.orderIndices.forEach(idx => {
         onProgress({ index: idx, status: 'success', shippingInfo: shippingCheck.infoMessage });
       });
     });
 
-  } catch (e) {
-    console.log(`X Success message not found`);
+    // 다음 그룹을 위해 성공 모달 정리
+    await dismissSuccessModal(page);
+
+  } else {
+    console.log(`X Cart add failed: ${cartResult.error}`);
     successItems.forEach(item => {
       item.orderIndices.forEach(idx => {
-        onProgress({ index: idx, status: 'error', errorReason: 'Add to cart failed' });
+        onProgress({ index: idx, status: 'error', errorReason: cartResult.error || 'Add to cart failed' });
       });
     });
   }
@@ -980,10 +1065,34 @@ async function startReview(orders, onReviewProgress) {
     await page.waitForTimeout(1500);
     console.log('+ Scrolled to top');
 
-    // 4. "全选" 체크박스 선택
+    // 4. "全选" 체크박스 선택 + 폴링
     console.log('\nStep 4: Selecting "全选" checkbox...');
     await selectAllCheckbox(page);
-    await page.waitForTimeout(1000);
+
+    // 체크박스 DOM 반영 폴링 (1초 × 30 = 최대 30초)
+    let checkboxReady = false;
+    for (let pollCount = 0; pollCount < 30; pollCount++) {
+      await page.waitForTimeout(1000);
+      checkboxReady = await page.evaluate(() => {
+        const wrappers = document.querySelectorAll(
+          '[class*="item-group-container--container"] .next-checkbox-wrapper'
+        );
+        if (wrappers.length === 0) return false;
+        let checkedCount = 0;
+        let activeCount = 0;
+        for (const wrapper of wrappers) {
+          const input = wrapper.querySelector('input.next-checkbox-input');
+          if (input && input.disabled) continue;
+          activeCount++;
+          if (wrapper.classList.contains('checked')) checkedCount++;
+        }
+        return activeCount > 0 && checkedCount === activeCount;
+      });
+      if (checkboxReady) break;
+    }
+    console.log(checkboxReady
+      ? '+ All checkboxes confirmed checked'
+      : '! Warning: Some checkboxes may not be checked after 30s');
 
     // 5. 카트 데이터 추출 (체크 상태 미반영 시 재시도)
     console.log('\nStep 5: Extracting cart data...');
@@ -1003,13 +1112,8 @@ async function startReview(orders, onReviewProgress) {
         break;
       }
 
-      if (uncheckedRate < 1.0) {
-        console.log('+ Some checkboxes unchecked - proceeding (may be intentional)');
-        break;
-      }
-
-      // 전부 체크 안 됨 → 로딩 중으로 판단, 재시도
-      console.log(`  All checkboxes unchecked - likely still loading (retry ${retry}/${maxRetries})...`);
+      // 일부/전부 미체크 → 로딩 중으로 판단, 재시도
+      console.log(`  ${uncheckedItems.length} checkboxes still unchecked (retry ${retry}/${maxRetries})...`);
       await page.waitForTimeout(2000);
       cartItems = await extractCartData(page);
       console.log(`+ Re-extracted ${cartItems.length} items from cart`);
@@ -1678,7 +1782,22 @@ async function smoothScrollToBottom(page) {
       });
 
       if (isAtBottom && sameCountAttempts >= maxSameCountAttempts) {
-        console.log(`    Scroll complete - no new items after ${maxSameCountAttempts} attempts at bottom`);
+        // 로딩 인디케이터가 아직 표시 중인지 확인
+        const isLoading = await page.evaluate(() => {
+          const indicator = document.querySelector('[class*="loadMoreIndicator"], [class*="loadMoreSpinner"]');
+          if (!indicator) return false;
+          const style = window.getComputedStyle(indicator);
+          return style.display !== 'none' && style.visibility !== 'hidden' && indicator.offsetHeight > 0;
+        });
+
+        if (isLoading) {
+          console.log(`    Loading indicator detected, waiting for more items...`);
+          sameCountAttempts = 0;  // 리셋하여 재시도
+          await page.waitForTimeout(1500);  // 로딩 대기
+          continue;
+        }
+
+        console.log(`    Scroll complete - no new items and no loading indicator`);
         break;
       }
     } else {
@@ -1692,7 +1811,18 @@ async function smoothScrollToBottom(page) {
     console.log(`    Max scroll attempts (${maxScrollAttempts}) reached`);
   }
 
-  // 스크롤 완료 후 추가 대기 (최종 콘텐츠 로딩)
+  // 스크롤 완료 후 로딩 인디케이터가 사라질 때까지 대기
+  for (let waitCount = 0; waitCount < 10; waitCount++) {
+    const stillLoading = await page.evaluate(() => {
+      const indicator = document.querySelector('[class*="loadMoreIndicator"], [class*="loadMoreSpinner"]');
+      if (!indicator) return false;
+      const style = window.getComputedStyle(indicator);
+      return style.display !== 'none' && style.visibility !== 'hidden' && indicator.offsetHeight > 0;
+    });
+    if (!stillLoading) break;
+    console.log(`    Waiting for final loading to complete... (${waitCount + 1})`);
+    await page.waitForTimeout(1000);
+  }
   await page.waitForTimeout(1500);
 
   // 최종 아이템 개수 확인
@@ -1706,6 +1836,14 @@ async function smoothScrollToBottom(page) {
 function stopProcessing() {
   shouldStop = true;
   console.log('Stop signal received');
+}
+
+// 중단 체크 헬퍼 (shouldStop이면 즉시 예외 발생)
+function checkShouldStop() {
+  if (shouldStop) {
+    console.log('\n*** STOPPED BY USER ***');
+    throw new Error('STOPPED_BY_USER');
+  }
 }
 
 // 참조코드 입력 함수 (주문 확인 창에서)
@@ -2085,7 +2223,10 @@ async function openLoginBrowser() {
 }
 
 // ========================================
-// 참조코드 입력 V2 (카트 → 결산 → 참조코드 → 주소 선택 전체 워크플로우)
+// 참조코드 입력 V2 (카트 → 결산 → 참조코드 → 주소 → 제출 → 반복)
+// - 카트에서 최대 24개 상점씩 처리 후 제출, 남은 상점이 있으면 반복
+// - 빈 textarea 발생 시 제출하지 않고 즉시 중단
+// - shouldStop 플래그로 사용자 수동 중단 지원
 // ========================================
 async function inputRefCodesV2(groupedData, userCode) {
   console.log('\n========================================');
@@ -2109,380 +2250,549 @@ async function inputRefCodesV2(groupedData, userCode) {
   const pages = context.pages();
   let page = pages[pages.length - 1];
 
+  // ── 누적 변수 초기화 ──
+  shouldStop = false;
   const successGroups = [];
   const successOrderIndexes = [];
+  const failedOrderIndexes = [];
   let emptyTextareaCount = 0;
+  let totalTextareas = 0;
   const emptySellerNames = [];
+  let iterationCount = 0;
+  let stoppedByEmptyTextarea = false;
+  let exitReason = '';  // 루프 종료 사유 추적
 
   try {
-    // ── Section 2: 카트 페이지 접속 + 로딩 대기 ──
-    console.log('Section 2: Navigating to cart page...');
-    await page.goto('https://cart.1688.com/cart.htm', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000
-    });
-    console.log('+ Navigated to cart page');
+    // ═══════════════════════════════════════
+    // 메인 루프: 카트 → 결산 → 참조코드 → 주소 → 제출 → 반복
+    // ═══════════════════════════════════════
+    while (true) {
+      iterationCount++;
+      console.log(`\n${'='.repeat(50)}`);
+      console.log(`ITERATION ${iterationCount}`);
+      console.log('='.repeat(50));
+      checkShouldStop();
 
-    // 카트 아이템이 로드될 때까지 대기
-    try {
-      await page.waitForSelector('[class*="shop-container--container"]', { timeout: 10000 });
-      console.log('+ Shop containers found');
-    } catch (e) {
-      console.log('  Warning: Shop containers not found, waiting anyway...');
-    }
-    await page.waitForTimeout(5000);
-    console.log('+ Page fully loaded (5s wait)');
+      // ── Section 2: 카트 페이지 접속 + 로딩 대기 ──
+      // 이전 제출의 리다이렉트(order_success.htm)와 충돌 방지: 최대 3회 재시도 + URL 검증
+      console.log('\nSection 2: Navigating to cart page...');
+      let cartNavigated = false;
+      for (let navRetry = 0; navRetry < 3; navRetry++) {
+        try {
+          await page.goto('https://cart.1688.com/cart.htm', {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+          });
+          // URL 검증: 실제로 카트 페이지인지 확인
+          const currentUrl = page.url();
+          if (currentUrl.includes('cart.1688.com/cart')) {
+            cartNavigated = true;
+            break;
+          }
+          console.log(`  Cart URL mismatch (attempt ${navRetry + 1}/3): ${currentUrl}`);
+          await page.waitForTimeout(5000);
+        } catch (e) {
+          console.log(`  Cart navigation attempt ${navRetry + 1}/3 failed: ${e.message}`);
+          await page.waitForTimeout(5000);
+        }
+      }
+      if (!cartNavigated) {
+        exitReason = '카트 페이지 접속 실패 (3회 재시도)';
+        console.log(`  X ${exitReason}`);
+        break;
+      }
+      console.log('+ Navigated to cart page');
 
-    // ── Section 3: 상점별 체크박스 선택 ──
-    // 왜 "全选"이 아닌 상점별 클릭인가:
-    // - 카트 페이지는 lazy loading으로 뷰포트 밖 상점이 미렌더링될 수 있음
-    // - 상점별 스크롤 → 렌더링 확인 → 클릭 → 폴링으로 100% 확실한 체크 보장
-    console.log('\nSection 3: Selecting shop checkboxes one by one...');
-    await selectShopCheckboxes(page);
-
-    // ── Section 4: 结算 버튼 클릭 + 주문확인 페이지 대기 ──
-    console.log('\nSection 4: Clicking 结算 button...');
-    const submitBtn = page.locator('[class*="bottom-bar--submitBtn"]');
-    const submitBtnCount = await submitBtn.count();
-    console.log(`  Found ${submitBtnCount} submit button(s)`);
-
-    if (submitBtnCount === 0) {
-      throw new Error('结算 button not found on page');
-    }
-
-    // 결산 버튼 클릭 전 스크롤 (하단 고정 바에 있으므로 보통 보임)
-    await submitBtn.first().click();
-    console.log('+ 结算 button clicked');
-
-    // 주문확인 페이지 로딩 대기
-    console.log('  Waiting for order confirmation page...');
-    try {
-      await page.waitForURL('**/order/confirm*', { timeout: 30000 });
-      console.log('+ URL changed to order confirmation page');
-    } catch (e) {
-      console.log('  Warning: URL pattern not matched, waiting for page elements...');
-    }
-
-    // 주문확인 페이지 핵심 요소 대기
-    try {
-      await page.waitForSelector('.order-inner', { timeout: 15000 });
-      console.log('+ Order inner elements loaded');
-    } catch (e) {
-      console.log('  Warning: .order-inner not found, trying alternative...');
+      try {
+        await page.waitForSelector('[class*="shop-container--container"]', { timeout: 10000 });
+        console.log('+ Shop containers found');
+      } catch (e) {
+        console.log('  Warning: Shop containers not found, waiting anyway...');
+      }
       await page.waitForTimeout(5000);
-    }
-    await page.waitForTimeout(2000);
-    console.log('+ Order confirmation page ready');
+      console.log('+ Page fully loaded (5s wait)');
 
-    // ── Section 5: 참조코드 입력 ──
-    // 기존 inputRefCodes의 참조코드 입력 로직과 동일
-    console.log('\nSection 5: Inputting reference codes...');
+      // ── Section 2.5: 상점 존재 여부 확인 ──
+      const shopSelector = '[class*="shop-container--container"]';
+      const shopCount = await page.locator(shopSelector).count();
+      if (shopCount === 0) {
+        exitReason = '장바구니에 남은 상점 없음 (정상 종료)';
+        console.log(`+ ${exitReason}`);
+        break;
+      }
+      console.log(`+ Found ${shopCount} shop container(s), continuing...`);
 
-    const orderInners = page.locator('.order-inner');
-    const orderCount = await orderInners.count();
-    console.log(`  Found ${orderCount} order(s) on page`);
+      // ── Section 3: 상점별 체크박스 선택 ──
+      console.log('\nSection 3: Selecting shop checkboxes one by one...');
+      checkShouldStop();
+      await selectShopCheckboxes(page);
 
-    // 각 order-inner 처리
-    for (let orderIdx = 0; orderIdx < orderCount; orderIdx++) {
-      const orderInner = orderInners.nth(orderIdx);
-      console.log(`\n  === Processing Order ${orderIdx + 1}/${orderCount} ===`);
+      // ── Section 4: 结算 버튼 클릭 + 주문확인 페이지 대기 ──
+      // 全选 체크 후 가격 재계산 로딩 완료 대기 → 결산 버튼 활성화 확인
+      console.log('\nSection 4: Waiting for 结算 button to be ready...');
+      checkShouldStop();
 
-      const offerContainers = orderInner.locator('.offer-container');
-      const offerCount = await offerContainers.count();
-      console.log(`  Found ${offerCount} offer(s) in this order`);
-
-      // 이 order에 입력할 모든 참조코드 수집
-      const allRefCodes = [];
-
-      // 각 offer-container 처리
-      for (let offerIdx = 0; offerIdx < offerCount; offerIdx++) {
-        const offerContainer = offerContainers.nth(offerIdx);
-
-        // offer_id 추출
-        const offerLink = offerContainer.locator('a[href*="offer/"]').first();
-        const hasLink = await offerLink.count() > 0;
-
-        if (!hasLink) {
-          console.log(`  Offer ${offerIdx + 1}: No offer link found`);
-          continue;
+      const settleBtnSelector = '[class*="bottom-bar--submitBtn"]';
+      let settleReady = false;
+      for (let pollCount = 0; pollCount < 30; pollCount++) {
+        await page.waitForTimeout(1000);
+        const btn = page.locator(settleBtnSelector).first();
+        if (await btn.count() === 0) continue;
+        // disabled 속성 또는 disabled 클래스 확인
+        const isDisabled = await btn.evaluate(el => {
+          return el.disabled || el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true';
+        }).catch(() => true);
+        if (!isDisabled) {
+          settleReady = true;
+          break;
         }
+      }
 
-        const href = await offerLink.getAttribute('href');
-        const offerIdMatch = href.match(/offer\/(\d+)\.html/);
+      if (!settleReady) {
+        exitReason = '结算 버튼 활성화 대기 실패 (30초)';
+        console.log(`  X ${exitReason}`);
+        break;
+      }
 
-        if (!offerIdMatch) {
-          console.log(`  Offer ${offerIdx + 1}: Could not extract offer_id from ${href}`);
-          continue;
-        }
+      const submitBtn = page.locator(settleBtnSelector).first();
+      await submitBtn.click();
+      console.log('+ 结算 button clicked (after loading complete)');
 
-        const offerId = offerIdMatch[1];
-        console.log(`\n  --- Offer ${offerIdx + 1}: ${offerId} ---`);
+      console.log('  Waiting for order confirmation page...');
+      try {
+        await page.waitForURL('**/order/confirm*', { timeout: 30000 });
+        console.log('+ URL changed to order confirmation page');
+      } catch (e) {
+        console.log('  Warning: URL pattern not matched, waiting for page elements...');
+      }
 
-        // 이 offer_id가 우리 데이터에 있는지 확인
-        const groupInfo = groupedData[offerId];
-        if (!groupInfo) {
-          console.log(`    X Not in our data, skipping`);
-          continue;
-        }
+      try {
+        await page.waitForSelector('.order-inner', { timeout: 15000 });
+        console.log('+ Order inner elements loaded');
+      } catch (e) {
+        console.log('  Warning: .order-inner not found, trying alternative...');
+        await page.waitForTimeout(5000);
+      }
+      await page.waitForTimeout(2000);
+      console.log('+ Order confirmation page ready');
 
-        console.log(`    Found in data with ${groupInfo.items.length} item(s)`);
+      // ── Section 5: 참조코드 입력 ──
+      console.log('\nSection 5: Inputting reference codes...');
+      checkShouldStop();
 
-        // cargo-container 찾기
-        const cargoContainers = offerContainer.locator('.cargo-container');
-        const cargoCount = await cargoContainers.count();
-        console.log(`    Found ${cargoCount} cargo(s)`);
+      const orderInners = page.locator('.order-inner');
+      const orderCount = await orderInners.count();
+      console.log(`  Found ${orderCount} order(s) on page`);
 
-        // 각 cargo 처리
-        for (let cargoIdx = 0; cargoIdx < cargoCount; cargoIdx++) {
-          const cargoContainer = cargoContainers.nth(cargoIdx);
+      for (let orderIdx = 0; orderIdx < orderCount; orderIdx++) {
+        const orderInner = orderInners.nth(orderIdx);
+        console.log(`\n  === Processing Order ${orderIdx + 1}/${orderCount} ===`);
 
-          // 옵션 정보 추출
-          const cargoSpec = cargoContainer.locator('.cargo-spec');
-          const hasSpec = await cargoSpec.count() > 0;
+        const offerContainers = orderInner.locator('.offer-container');
+        const offerCount = await offerContainers.count();
+        console.log(`  Found ${offerCount} offer(s) in this order`);
 
-          if (!hasSpec) {
-            console.log(`      Cargo ${cargoIdx + 1}: No spec found`);
+        const allRefCodes = [];
+
+        for (let offerIdx = 0; offerIdx < offerCount; offerIdx++) {
+          const offerContainer = offerContainers.nth(offerIdx);
+
+          const offerLink = offerContainer.locator('a[href*="offer/"]').first();
+          const hasLink = await offerLink.count() > 0;
+
+          if (!hasLink) {
+            console.log(`  Offer ${offerIdx + 1}: No offer link found`);
             continue;
           }
 
-          const specText = await cargoSpec.textContent();
-          console.log(`      Cargo ${cargoIdx + 1} spec: "${specText}"`);
+          const href = await offerLink.getAttribute('href');
+          const offerIdMatch = href.match(/offer\/(\d+)\.html/);
 
-          // 색상과 사이즈 추출
-          let color = '';
-          let size = '';
-
-          const specParts = specText.split(';').map(s => s.trim());
-          for (const part of specParts) {
-            if (part.includes('颜色:') || part.includes('色:')) {
-              color = part.replace(/颜色:|色:/g, '').trim();
-            } else if (part.includes('尺码:') || part.includes('码:')) {
-              size = part.replace(/尺码:|码:/g, '').trim();
-            }
+          if (!offerIdMatch) {
+            console.log(`  Offer ${offerIdx + 1}: Could not extract offer_id from ${href}`);
+            continue;
           }
 
-          console.log(`      Extracted: Color="${color}", Size="${size}"`);
+          const offerId = offerIdMatch[1];
+          console.log(`\n  --- Offer ${offerIdx + 1}: ${offerId} ---`);
 
-          // 프리사이즈 동의어 목록
-          const freeSizeAliases = ['FREE', 'free', 'Free', '균码', '均码', 'F', '프리', '프리사이즈', 'FREESIZE', 'OneSize', 'OS'];
-          const isFreeSize = (s) => freeSizeAliases.some(alias => s.toUpperCase().includes(alias.toUpperCase()));
+          const groupInfo = groupedData[offerId];
+          if (!groupInfo) {
+            console.log(`    X Not in our data, skipping`);
+            continue;
+          }
 
-          // 매칭되는 아이템 찾기 (공백 정규화 + 부분 매칭)
-          const normalizedColor = color.replace(/\s+/g, ' ').trim();
+          console.log(`    Found in data with ${groupInfo.items.length} item(s)`);
 
-          const matchingItems = groupInfo.items.filter(item => {
-            const normalizedItemColor = (item.color || '').replace(/\s+/g, ' ').trim();
-            const colorMatch = normalizedItemColor === normalizedColor;
+          const cargoContainers = offerContainer.locator('.cargo-container');
+          const cargoCount = await cargoContainers.count();
+          console.log(`    Found ${cargoCount} cargo(s)`);
 
-            let sizeMatch = false;
-            const normalizedItemSize = (item.size || '').replace(/\s+/g, ' ').trim();
-            const normalizedSize = size.replace(/\s+/g, ' ').trim();
-            const itemIsFree = isFreeSize(normalizedItemSize);
-            const cargoIsFree = isFreeSize(normalizedSize);
+          for (let cargoIdx = 0; cargoIdx < cargoCount; cargoIdx++) {
+            const cargoContainer = cargoContainers.nth(cargoIdx);
 
-            if (itemIsFree && cargoIsFree) {
-              sizeMatch = true;
-            } else if (normalizedSize.includes(normalizedItemSize) || normalizedItemSize.includes(normalizedSize)) {
-              sizeMatch = true;
-            } else if (normalizedItemSize === normalizedSize) {
-              sizeMatch = true;
+            const cargoSpec = cargoContainer.locator('.cargo-spec');
+            const hasSpec = await cargoSpec.count() > 0;
+
+            if (!hasSpec) {
+              console.log(`      Cargo ${cargoIdx + 1}: No spec found`);
+              continue;
             }
 
-            console.log(`        Comparing Item(${normalizedItemColor}|${normalizedItemSize}) vs Cargo(${normalizedColor}|${normalizedSize}) = ${colorMatch && sizeMatch}`);
-            return colorMatch && sizeMatch;
-          });
+            const specText = await cargoSpec.textContent();
+            console.log(`      Cargo ${cargoIdx + 1} spec: "${specText}"`);
 
-          if (matchingItems.length > 0) {
-            console.log(`      Found ${matchingItems.length} matching item(s)`);
-            matchingItems.forEach(item => {
-              if (item.orderIndex !== undefined && successOrderIndexes.includes(item.orderIndex)) {
-                console.log(`        Skipped (already added): orderIndex ${item.orderIndex}`);
-                return;
+            let color = '';
+            let size = '';
+
+            const specParts = specText.split(';').map(s => s.trim());
+            for (const part of specParts) {
+              if (part.includes('颜色:') || part.includes('色:')) {
+                color = part.replace(/颜色:|色:/g, '').trim();
+              } else if (part.includes('尺码:') || part.includes('码:')) {
+                size = part.replace(/尺码:|码:/g, '').trim();
+              }
+            }
+
+            console.log(`      Extracted: Color="${color}", Size="${size}"`);
+
+            const freeSizeAliases = ['FREE', 'free', 'Free', '균码', '均码', 'F', '프리', '프리사이즈', 'FREESIZE', 'OneSize', 'OS'];
+            const isFreeSize = (s) => freeSizeAliases.some(alias => s.toUpperCase().includes(alias.toUpperCase()));
+
+            const normalizedColor = color.replace(/\s+/g, ' ').trim();
+
+            const matchingItems = groupInfo.items.filter(item => {
+              const normalizedItemColor = (item.color || '').replace(/\s+/g, ' ').trim();
+              const colorMatch = normalizedItemColor === normalizedColor;
+
+              let sizeMatch = false;
+              const normalizedItemSize = (item.size || '').replace(/\s+/g, ' ').trim();
+              const normalizedSize = size.replace(/\s+/g, ' ').trim();
+              const itemIsFree = isFreeSize(normalizedItemSize);
+              const cargoIsFree = isFreeSize(normalizedSize);
+
+              if (itemIsFree && cargoIsFree) {
+                sizeMatch = true;
+              } else if (normalizedSize.includes(normalizedItemSize) || normalizedItemSize.includes(normalizedSize)) {
+                sizeMatch = true;
+              } else if (normalizedItemSize === normalizedSize) {
+                sizeMatch = true;
               }
 
-              allRefCodes.push({
-                orderCode: item.orderCode,
-                orderNoDatePart: item.orderNoDatePart,
-                orderNoRestPart: item.orderNoRestPart,
-                quantity: item.quantity,
-                orderIndex: item.orderIndex
-              });
-
-              if (item.orderIndex !== undefined) {
-                successOrderIndexes.push(item.orderIndex);
-              }
-              console.log(`        Added: ${item.orderCode} | ${item.orderNoDatePart} | ${item.orderNoRestPart}:${item.quantity} (orderIndex: ${item.orderIndex})`);
+              console.log(`        Comparing Item(${normalizedItemColor}|${normalizedItemSize}) vs Cargo(${normalizedColor}|${normalizedSize}) = ${colorMatch && sizeMatch}`);
+              return colorMatch && sizeMatch;
             });
 
-            if (!successGroups.includes(offerId)) {
-              successGroups.push(offerId);
+            if (matchingItems.length > 0) {
+              console.log(`      Found ${matchingItems.length} matching item(s)`);
+              matchingItems.forEach(item => {
+                if (item.orderIndex !== undefined && successOrderIndexes.includes(item.orderIndex)) {
+                  console.log(`        Skipped (already added): orderIndex ${item.orderIndex}`);
+                  return;
+                }
+
+                allRefCodes.push({
+                  orderCode: item.orderCode,
+                  orderNoDatePart: item.orderNoDatePart,
+                  orderNoRestPart: item.orderNoRestPart,
+                  quantity: item.quantity,
+                  orderIndex: item.orderIndex
+                });
+
+                if (item.orderIndex !== undefined) {
+                  successOrderIndexes.push(item.orderIndex);
+                }
+                console.log(`        Added: ${item.orderCode} | ${item.orderNoDatePart} | ${item.orderNoRestPart}:${item.quantity} (orderIndex: ${item.orderIndex})`);
+              });
+
+              if (!successGroups.includes(offerId)) {
+                successGroups.push(offerId);
+              }
+            } else {
+              console.log(`      X No matching items`);
+            }
+          }
+        }
+
+        // textarea에 참조코드 입력
+        if (allRefCodes.length > 0) {
+          console.log(`\n  Total ${allRefCodes.length} ref code(s) to input for this order`);
+
+          allRefCodes.sort((a, b) => a.orderIndex - b.orderIndex);
+          console.log('  Sorted by orderIndex:', allRefCodes.map(i => `${i.orderNoRestPart}:${i.quantity} (idx:${i.orderIndex})`).join(', '));
+
+          const groupedRefCodes = [];
+          const groupMap = new Map();
+
+          allRefCodes.forEach(item => {
+            const key = `${item.orderCode}|${item.orderNoDatePart}`;
+            if (!groupMap.has(key)) {
+              const group = {
+                orderCode: item.orderCode,
+                orderNoDatePart: item.orderNoDatePart,
+                restParts: []
+              };
+              groupMap.set(key, group);
+              groupedRefCodes.push(group);
+            }
+            groupMap.get(key).restParts.push(`${item.orderNoRestPart}:${item.quantity}`);
+          });
+
+          const memoLines = groupedRefCodes.map(group => {
+            return `${group.orderCode} | ${group.orderNoDatePart} | ${group.restParts.join(', ')}`;
+          });
+          const memoText = memoLines.join('\n');
+          console.log(`  Combined memo text:\n${memoText}`);
+
+          const textarea = orderInner.locator('.order-footer .leave-message-container .q-textarea textarea').first();
+          const textareaFound = await textarea.count() > 0;
+
+          console.log(`  Textarea in order-footer found: ${textareaFound}`);
+
+          if (textareaFound) {
+            console.log(`  Attempting to input ref codes...`);
+            await textarea.scrollIntoViewIfNeeded();
+            await page.waitForTimeout(300);
+            await textarea.click();
+            await page.waitForTimeout(200);
+            await textarea.fill(memoText);
+            await page.waitForTimeout(500);
+
+            const inputValue = await textarea.inputValue();
+            console.log(`  Input verification: ${inputValue.length} chars`);
+
+            if (inputValue === memoText) {
+              console.log(`  + Ref codes inputted successfully`);
+            } else {
+              console.log(`  ! Input may not match exactly`);
+              console.log(`  Expected length: ${memoText.length}, Got: ${inputValue.length}`);
             }
           } else {
-            console.log(`      X No matching items`);
-          }
-        }
-      }
-
-      // 이 order에 입력할 참조코드가 있으면 textarea에 입력
-      if (allRefCodes.length > 0) {
-        console.log(`\n  Total ${allRefCodes.length} ref code(s) to input for this order`);
-
-        // 원래 주문 목록 순서대로 정렬
-        allRefCodes.sort((a, b) => a.orderIndex - b.orderIndex);
-        console.log('  Sorted by orderIndex:', allRefCodes.map(i => `${i.orderNoRestPart}:${i.quantity} (idx:${i.orderIndex})`).join(', '));
-
-        // 같은 orderCode + orderNoDatePart 끼리 그룹화
-        const groupedRefCodes = [];
-        const groupMap = new Map();
-
-        allRefCodes.forEach(item => {
-          const key = `${item.orderCode}|${item.orderNoDatePart}`;
-          if (!groupMap.has(key)) {
-            const group = {
-              orderCode: item.orderCode,
-              orderNoDatePart: item.orderNoDatePart,
-              restParts: []
-            };
-            groupMap.set(key, group);
-            groupedRefCodes.push(group);
-          }
-          groupMap.get(key).restParts.push(`${item.orderNoRestPart}:${item.quantity}`);
-        });
-
-        // 최종 텍스트 생성
-        const memoLines = groupedRefCodes.map(group => {
-          return `${group.orderCode} | ${group.orderNoDatePart} | ${group.restParts.join(', ')}`;
-        });
-        const memoText = memoLines.join('\n');
-        console.log(`  Combined memo text:\n${memoText}`);
-
-        // order-footer의 textarea 찾기
-        const textarea = orderInner.locator('.order-footer .leave-message-container .q-textarea textarea').first();
-        const textareaFound = await textarea.count() > 0;
-
-        console.log(`  Textarea in order-footer found: ${textareaFound}`);
-
-        if (textareaFound) {
-          console.log(`  Attempting to input ref codes...`);
-          await textarea.scrollIntoViewIfNeeded();
-          await page.waitForTimeout(300);
-          await textarea.click();
-          await page.waitForTimeout(200);
-          await textarea.fill(memoText);
-          await page.waitForTimeout(500);
-
-          // 입력 확인
-          const inputValue = await textarea.inputValue();
-          console.log(`  Input verification: ${inputValue.length} chars`);
-
-          if (inputValue === memoText) {
-            console.log(`  + Ref codes inputted successfully`);
-          } else {
-            console.log(`  ! Input may not match exactly`);
-            console.log(`  Expected length: ${memoText.length}, Got: ${inputValue.length}`);
+            console.log(`  X Textarea not found in order-footer`);
           }
         } else {
-          console.log(`  X Textarea not found in order-footer`);
+          console.log(`\n  No ref codes to input for this order`);
         }
-      } else {
-        console.log(`\n  No ref codes to input for this order`);
-      }
-    }
-
-    // 빈 textarea 확인
-    console.log('\n--- Checking for empty textareas ---');
-    const failedOrderIndexes = [];
-
-    const orderGroups = page.locator('.order-group-container');
-    const orderGroupCount = await orderGroups.count();
-
-    for (let orderIdx = 0; orderIdx < orderGroupCount; orderIdx++) {
-      const orderGroup = orderGroups.nth(orderIdx);
-
-      const shopLink = orderGroup.locator('.order-group-header .shop-title .shop-link').first();
-      let sellerName = 'Unknown Seller';
-
-      if (await shopLink.count() > 0) {
-        sellerName = await shopLink.innerText().catch(() => 'Unknown Seller');
-        sellerName = sellerName.trim();
       }
 
-      const textarea = orderGroup.locator('.order-footer .leave-message-container .q-textarea textarea').first();
+      // ── Section 5.5: 빈 textarea 확인 → 있으면 제출 없이 즉시 중단 ──
+      console.log('\n--- Checking for empty textareas ---');
+      emptyTextareaCount = 0;
+      emptySellerNames.length = 0;
 
-      if (await textarea.count() > 0) {
-        const value = await textarea.inputValue();
-        if (!value || value.trim() === '') {
-          emptyTextareaCount++;
-          emptySellerNames.push(sellerName);
-          console.log(`  Order ${orderIdx + 1} (${sellerName}): EMPTY`);
+      const orderGroups = page.locator('.order-group-container');
+      const orderGroupCount = await orderGroups.count();
+      totalTextareas = orderGroupCount;
 
-          const offerContainers = orderGroup.locator('.offer-container');
-          const offerCount = await offerContainers.count();
-          for (let offerIdx = 0; offerIdx < offerCount; offerIdx++) {
-            const offerContainer = offerContainers.nth(offerIdx);
-            const offerLink = offerContainer.locator('a[href*="offer/"]').first();
-            if (await offerLink.count() > 0) {
-              const href = await offerLink.getAttribute('href');
-              const offerIdMatch = href.match(/offer\/(\d+)\.html/);
-              if (offerIdMatch) {
-                const offerId = offerIdMatch[1];
-                const groupInfo = groupedData[offerId];
-                if (groupInfo && groupInfo.orderIndexes) {
-                  failedOrderIndexes.push(...groupInfo.orderIndexes);
+      for (let orderIdx = 0; orderIdx < orderGroupCount; orderIdx++) {
+        const orderGroup = orderGroups.nth(orderIdx);
+
+        const shopLink = orderGroup.locator('.order-group-header .shop-title .shop-link').first();
+        let sellerName = 'Unknown Seller';
+
+        if (await shopLink.count() > 0) {
+          sellerName = await shopLink.innerText().catch(() => 'Unknown Seller');
+          sellerName = sellerName.trim();
+        }
+
+        const textarea = orderGroup.locator('.order-footer .leave-message-container .q-textarea textarea').first();
+
+        if (await textarea.count() > 0) {
+          const value = await textarea.inputValue();
+          if (!value || value.trim() === '') {
+            emptyTextareaCount++;
+            emptySellerNames.push(sellerName);
+            console.log(`  Order ${orderIdx + 1} (${sellerName}): EMPTY`);
+
+            const offerContainers = orderGroup.locator('.offer-container');
+            const offerCount = await offerContainers.count();
+            for (let offerIdx = 0; offerIdx < offerCount; offerIdx++) {
+              const offerContainer = offerContainers.nth(offerIdx);
+              const offerLink = offerContainer.locator('a[href*="offer/"]').first();
+              if (await offerLink.count() > 0) {
+                const href = await offerLink.getAttribute('href');
+                const offerIdMatch = href.match(/offer\/(\d+)\.html/);
+                if (offerIdMatch) {
+                  const offerId = offerIdMatch[1];
+                  const groupInfo = groupedData[offerId];
+                  if (groupInfo && groupInfo.orderIndexes) {
+                    failedOrderIndexes.push(...groupInfo.orderIndexes);
+                  }
                 }
               }
             }
+          } else {
+            console.log(`  Order ${orderIdx + 1} (${sellerName}): Has content (${value.length} chars)`);
           }
-        } else {
-          console.log(`  Order ${orderIdx + 1} (${sellerName}): Has content (${value.length} chars)`);
         }
       }
+
+      // 빈 textarea 발견 → 제출하지 않고 루프 종료
+      if (emptyTextareaCount > 0) {
+        console.log(`\n!!! ${emptyTextareaCount} empty textarea(s) found. Stopping before submit.`);
+        stoppedByEmptyTextarea = true;
+        break;
+      }
+
+      // ── Section 6: 주소 선택 ──
+      console.log('\nSection 6: Address selection...');
+      checkShouldStop();
+      await selectAddress(page, userCode);
+
+      // ── Section 6.5: 주문 제출 버튼 클릭 ──
+      // 주소 확정(确定) 후 로딩 완료 대기 → enabled + visible 된 후 클릭
+      console.log('\nSection 6.5: Waiting for submit button to be ready...');
+      checkShouldStop();
+
+      // 提交订单 버튼: <q-button type="primary" disabled="false" loading="false">
+      const submitBtnSelector = 'q-button[type="primary"][disabled="false"][loading="false"]';
+      try {
+        await page.waitForSelector(submitBtnSelector, { state: 'visible', timeout: 30000 });
+        console.log('  + Submit button is ready (visible & enabled)');
+      } catch (e) {
+        exitReason = '제출 버튼 활성화 대기 실패 (30초)';
+        console.log(`  X ${exitReason}: ${e.message}`);
+        break;
+      }
+
+      const submitOrderBtn = page.locator(submitBtnSelector).last();
+      await submitOrderBtn.click();
+      console.log('  + Submit order button clicked');
+
+      // ── Section 6.6: 제출 완료 대기 ──
+      // 성공 페이지 URL 감지 (최대 30초) → 감지 후 5초 안정화
+      console.log('  Waiting for submission to complete...');
+      let submissionDetected = false;
+      for (let waitSec = 0; waitSec < 30; waitSec++) {
+        await page.waitForTimeout(1000);
+        checkShouldStop();
+        const currentUrl = page.url();
+        if (currentUrl.includes('order_success') || currentUrl.includes('make_order_success')) {
+          console.log(`  + Submission success page detected (${waitSec + 1}s)`);
+          submissionDetected = true;
+          break;
+        }
+      }
+      if (!submissionDetected) {
+        console.log('  ! Success page not detected within 30s, proceeding anyway...');
+      }
+      await page.waitForTimeout(5000);
+      console.log('  + Submission wait completed');
+
+      // → while 루프 처음으로: 카트 페이지로 이동하여 남은 상점 처리
+      console.log('\n  Returning to cart for next batch...');
     }
 
-    const totalTextareas = orderGroupCount;
-
-    // ── Section 6: 更改地址 클릭 + 주소 선택 ──
-    console.log('\nSection 6: Address selection...');
-    await selectAddress(page, userCode);
-
-    // ── Section 7: 결과 반환 ──
+    // ── Section 7: 누적 결과 반환 ──
     console.log('\n========================================');
     console.log('INPUT REF CODES V2 COMPLETED');
+    console.log(`Iterations: ${iterationCount}`);
     console.log(`Success groups: ${successGroups.length}/${Object.keys(groupedData).length}`);
     console.log(`Success order indexes: ${successOrderIndexes.length}`, successOrderIndexes);
     console.log(`Empty textareas: ${emptyTextareaCount}/${totalTextareas}`);
+    console.log(`Stopped by empty textarea: ${stoppedByEmptyTextarea}`);
     if (emptySellerNames.length > 0) {
       console.log('Empty sellers:', emptySellerNames);
     }
     console.log('Failed order indexes:', failedOrderIndexes);
+    console.log(`Exit reason: ${exitReason || 'N/A'}`);
     console.log('========================================');
 
-    return { success: true, successGroups, successOrderIndexes, emptyTextareaCount, totalTextareas, emptySellerNames, failedOrderIndexes };
+    return {
+      success: true, successGroups, successOrderIndexes,
+      emptyTextareaCount, totalTextareas, emptySellerNames,
+      failedOrderIndexes, iterationCount,
+      stoppedByUser: false, stoppedByEmptyTextarea,
+      exitReason
+    };
 
   } catch (error) {
+    if (error.message === 'STOPPED_BY_USER') {
+      console.log('\nV2 stopped by user');
+      return {
+        success: true, successGroups, successOrderIndexes,
+        emptyTextareaCount, totalTextareas, emptySellerNames,
+        failedOrderIndexes, iterationCount,
+        stoppedByUser: true, stoppedByEmptyTextarea: false,
+        exitReason: '사용자 중지'
+      };
+    }
     console.log(`\nX Input ref codes V2 failed: ${error.message}`);
     console.error(error.stack);
     throw error;
+  } finally {
+    shouldStop = false;
   }
 }
 
 // ========================================
 // 상점별 체크박스 선택 함수 (카트 페이지)
-// - 全选이 아닌 상점별 개별 클릭하는 이유:
-//   1. lazy loading으로 뷰포트 밖 상점이 미렌더링될 수 있음
-//   2. 상점별 스크롤 → 뷰포트 진입 → 렌더링 확인 → 클릭 → 폴링으로 100% 확실
-//   3. 전체선택 클릭 시 체크 상태가 DOM에 반영되지 않는 타이밍 문제 회피
+// - ≤24개: 헤더 全选 체크박스로 한번에 선택 (빠름, ~3초)
+// - >24개: 상점별 개별 클릭 (lazy loading 대응, 최대 24개)
 // ========================================
 async function selectShopCheckboxes(page) {
-  // CSS 모듈 해시 변경에 대응하기 위해 부분 매칭 셀렉터 사용
+  const shopSelector = '[class*="shop-container--container"]';
+  const itemCheckboxSelector = '[class*="item-group-container--container"] .next-checkbox-input';
+  const shopCount = await page.locator(shopSelector).count();
+
+  // ── 24개 이하: 全选 헤더 체크박스로 한번에 선택 ──
+  if (shopCount <= 24) {
+    console.log(`  Found ${shopCount} shop(s) (≤24), using 全选 header checkbox`);
+
+    const selectAllCb = page.locator('th[class*="colCheckbox"] .next-checkbox-input');
+    if (await selectAllCb.count() > 0) {
+      const isChecked = await selectAllCb.isChecked().catch(() => false);
+      if (!isChecked) {
+        await selectAllCb.click({ force: true });
+        console.log('  + 全选 checkbox clicked');
+      } else {
+        console.log('  + 全选 already checked');
+      }
+
+      // 폴링: 모든 아이템 체크될 때까지 대기 (500ms × 40 = 20초)
+      let allChecked = false;
+      for (let checkCount = 0; checkCount < 40; checkCount++) {
+        await page.waitForTimeout(500);
+        allChecked = await page.evaluate(({ itemSel }) => {
+          const checkboxes = document.querySelectorAll(itemSel);
+          if (checkboxes.length === 0) return true;
+          for (const cb of checkboxes) {
+            const label = cb.closest('.next-checkbox-wrapper');
+            const checked = (label && label.classList.contains('checked'))
+                         || cb.getAttribute('aria-checked') === 'true';
+            if (!checked) return false;
+          }
+          return true;
+        }, { itemSel: itemCheckboxSelector });
+        if (allChecked) break;
+      }
+
+      console.log(allChecked
+        ? `  + All ${shopCount} shops checked via 全选`
+        : `  ! Warning: Some items may not be checked after 20s`);
+    } else {
+      console.log('  X 全选 header checkbox not found, falling back to one-by-one');
+      await selectShopCheckboxesOneByOne(page, shopCount);
+    }
+    return;
+  }
+
+  // ── 24개 초과: 상점별 개별 선택 (최대 24개) ──
+  console.log(`  Found ${shopCount} shop(s) (>24), selecting first 24 one by one`);
+  await selectShopCheckboxesOneByOne(page, shopCount);
+}
+
+// ========================================
+// 상점별 개별 체크박스 선택 (>24개일 때 사용)
+// - 스크롤 → 뷰포트 진입 → 렌더링 확인 → 클릭 → 폴링
+// ========================================
+async function selectShopCheckboxesOneByOne(page, shopCount) {
   const shopSelector = '[class*="shop-container--container"]';
   const sellerCheckboxSelector = '[class*="companyWrapper"] .next-checkbox-input';
   const itemCheckboxSelector = '[class*="item-group-container--container"] .next-checkbox-input';
-
-  const shopCount = await page.locator(shopSelector).count();
   const targetCount = Math.min(shopCount, 24);
 
-  console.log(`  Found ${shopCount} shop(s), processing ${targetCount}`);
+  console.log(`  Processing ${targetCount} of ${shopCount} shop(s) one by one`);
 
   for (let i = 0; i < targetCount; i++) {
     const shopBlock = page.locator(shopSelector).nth(i);
@@ -2514,15 +2824,13 @@ async function selectShopCheckboxes(page) {
       continue;
     }
 
-    // 하위 아이템 체크박스 개수 확인 (클릭 전에 수집)
+    // 하위 아이템 체크박스 개수 확인
     const itemCheckboxCount = await shopBlock.locator(itemCheckboxSelector).count();
 
     console.log(`  [${i + 1}/${targetCount}] Clicking seller checkbox (${itemCheckboxCount} items)...`);
     await sellerCheckbox.click({ force: true });
 
-    // 하위 아이템 전체 체크될 때까지 폴링
-    // - 500ms 간격 확인, 최대 20초 (40회)
-    // - 체크 확인: label.classList.contains('checked') 또는 aria-checked="true"
+    // 하위 아이템 전체 체크될 때까지 폴링 (500ms × 40 = 20초)
     let allChecked = false;
     for (let checkCount = 0; checkCount < 40; checkCount++) {
       await page.waitForTimeout(500);

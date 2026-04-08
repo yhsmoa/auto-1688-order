@@ -1475,6 +1475,13 @@ function stopOrders() {
   }
 }
 
+// V2 참조코드 중지
+function stopRefCodesV2() {
+  if (confirm('V2 참조코드 입력을 중지하시겠습니까?\n현재까지 처리된 주문은 유지됩니다.')) {
+    window.api.stopProcessing();
+  }
+}
+
 // 주문 생략 - 주문 진행 없이 바로 검수 가능하도록
 function skipOrders() {
   if (orders.length === 0) {
@@ -1511,6 +1518,9 @@ window.api.onProgress((progress) => {
     orders[index].status = status;
     if (errorReason) {
       orders[index].errorReason = errorReason;
+      if (errorReason === 'Invalid URL' || errorReason === 'Product offline') {
+        orders[index].reason = '링크 없음';
+      }
     }
   }
 
@@ -3080,9 +3090,12 @@ async function inputRefCodesV2() {
   // userCode를 groupedData에 내장 (V1과 동일한 단일 객체 전달 패턴)
   groupedData._userCode = userCode;
 
+  // ── 버튼 상태: V2 → 중지 모드 ──
+  document.getElementById('btnRefCodeV2').style.display = 'none';
+  document.getElementById('btnStopV2').style.display = 'inline-block';
+
   // ── 자동화 실행 ──
   try {
-    document.getElementById('btnRefCodeV2').disabled = true;
     const result = await window.api.inputRefCodesV2(groupedData);
 
     // 성공한 항목 표시
@@ -3098,14 +3111,21 @@ async function inputRefCodesV2() {
     stepStatus.refCode = true;
     updateButtonSteps();
 
-    // 빈 textarea 경고
-    if (result.emptyTextareaCount > 0) {
+    // 결과에 따른 안내
+    if (result.stoppedByUser) {
+      alert(`V2 참조코드 입력이 중단되었습니다.\n처리 완료: ${result.successOrderIndexes.length}건 (${result.iterationCount}회 반복)`);
+    } else if (result.stoppedByEmptyTextarea) {
       showEmptyTextareaWarning(result.emptyTextareaCount, result.totalTextareas, result.emptySellerNames);
+      alert(`빈 입력폼 발견으로 제출하지 않고 중단되었습니다.\n빈 항목을 확인해주세요.`);
+    } else {
+      const reasonText = result.exitReason ? `\n종료 사유: ${result.exitReason}` : '';
+      alert(`V2 참조코드 입력 완료!\n처리: ${result.successOrderIndexes.length}건 (${result.iterationCount}회 반복)${reasonText}`);
     }
   } catch (error) {
     alert('V2 참조코드 입력 중 오류가 발생했습니다: ' + error.message);
   } finally {
-    document.getElementById('btnRefCodeV2').disabled = false;
+    document.getElementById('btnRefCodeV2').style.display = 'inline-block';
+    document.getElementById('btnStopV2').style.display = 'none';
   }
 }
 
@@ -3800,6 +3820,7 @@ async function saveToSupabaseV2() {
         '1688_offer_id': db['1688_offer_id'] || null,
         '1688_order_id': db['1688_order_id'] || null,
         price_delivery_cny: db.price_delivery_cny ?? null,
+        vendor_option_id: db.option_id || null,              // U열
         user_id: ftUserId,
         status: 'PROCESSING'
       };
