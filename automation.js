@@ -705,21 +705,7 @@ async function processGroupOrder(page, group, onProgress) {
 
   console.log(`Option structure: Colors=${colorButtons.length}, Sizes=${sizeRows.length}`);
 
-  // 4. 배송비 사전 체크 (루프 전에 1회)
-  console.log(`\nChecking shipping fee...`);
-  const shippingCheck = await checkShippingFee(page);
-  if (shippingCheck.warning) {
-    console.log(`X High shipping fee detected, aborting`);
-    items.forEach(item => {
-      item.orderIndices.forEach(idx => {
-        onProgress({ index: idx, status: 'error', errorReason: shippingCheck.message });
-      });
-    });
-    return;
-  }
-  console.log(`Shipping fee OK`);
-
-  // 5. 각 아이템(옵션) 처리 - 옵션 선택 후 즉시 장바구니 추가
+  // 각 아이템(옵션) 처리
   for (const item of items) {
     console.log(`\n--- Processing: Color=${item.color}, Size=${item.size}, Qty=${item.quantity} ---`);
 
@@ -859,26 +845,9 @@ async function processGroupOrder(page, group, onProgress) {
       await page.keyboard.press('Tab');
       await page.waitForTimeout(300);
 
-      // 즉시 장바구니 추가 (각 아이템마다 개별 처리 → 다음 색상 선택 시 수량이 리셋되는 것 방지)
-      let addCartBtn = page.locator('button[data-click="ADD_CART"]');
-      if (await addCartBtn.count() === 0) addCartBtn = page.locator('button:has-text("加采购车")');
-      if (await addCartBtn.count() === 0) addCartBtn = page.locator('button.v-button:has-text("加采购车")');
-
-      if (await addCartBtn.count() === 0) {
-        throw new Error('Cart button not found');
-      }
-
-      const cartResult = await clickAndWaitForNewModal(page, addCartBtn);
-      if (cartResult.success) {
-        item.optionSelected = true;
-        console.log(`  + Added to cart: ${item.color}/${item.size}`);
-        item.orderIndices.forEach(idx => {
-          onProgress({ index: idx, status: 'success', shippingInfo: shippingCheck.infoMessage });
-        });
-        await dismissSuccessModal(page);
-      } else {
-        throw new Error(cartResult.error || 'Add to cart failed');
-      }
+      // 이 아이템 성공 (아직 장바구니 추가 전이지만 옵션 선택 완료)
+      item.optionSelected = true;
+      console.log(`  + Option & quantity set for this item`);
 
     } catch (error) {
       console.log(`  X FAILED: ${error.message}`);
@@ -892,9 +861,72 @@ async function processGroupOrder(page, group, onProgress) {
     }
   }
 
-  // 결과 요약
+  // 4. 성공한 옵션이 하나라도 있으면 장바구니 추가
   const successItems = items.filter(item => item.optionSelected);
-  console.log(`\nCart adding complete: ${successItems.length}/${items.length} items added`);
+
+  if (successItems.length === 0) {
+    console.log(`\nNo options selected successfully, skipping cart`);
+    return;
+  }
+
+  console.log(`\n${successItems.length}/${items.length} options selected, checking shipping fee...`);
+
+  // 배송비 체크
+  const shippingCheck = await checkShippingFee(page);
+  if (shippingCheck.warning) {
+    console.log(`X High shipping fee detected, marking as error`);
+    successItems.forEach(item => {
+      item.orderIndices.forEach(idx => {
+        onProgress({ index: idx, status: 'error', errorReason: shippingCheck.message });
+      });
+    });
+    return;
+  }
+
+  console.log(`Shipping fee OK, adding to cart...`);
+
+  // 장바구니 버튼 찾기
+  let addCartBtn = page.locator('button[data-click="ADD_CART"]');
+  if (await addCartBtn.count() === 0) {
+    addCartBtn = page.locator('button:has-text("加采购车")');
+  }
+  if (await addCartBtn.count() === 0) {
+    addCartBtn = page.locator('button.v-button:has-text("加采购车")');
+  }
+
+  if (await addCartBtn.count() === 0) {
+    console.log(`X Cart button not found`);
+    successItems.forEach(item => {
+      item.orderIndices.forEach(idx => {
+        onProgress({ index: idx, status: 'error', errorReason: 'Cart button not found' });
+      });
+    });
+    return;
+  }
+
+  // 기존 모달 정리 후 장바구니 추가 + 새 모달 검증
+  const cartResult = await clickAndWaitForNewModal(page, addCartBtn);
+
+  if (cartResult.success) {
+    console.log(`SUCCESS! Added to cart`);
+
+    successItems.forEach(item => {
+      item.orderIndices.forEach(idx => {
+        onProgress({ index: idx, status: 'success', shippingInfo: shippingCheck.infoMessage });
+      });
+    });
+
+    // 다음 그룹을 위해 성공 모달 정리
+    await dismissSuccessModal(page);
+
+  } else {
+    console.log(`X Cart add failed: ${cartResult.error}`);
+    successItems.forEach(item => {
+      item.orderIndices.forEach(idx => {
+        onProgress({ index: idx, status: 'error', errorReason: cartResult.error || 'Add to cart failed' });
+      });
+    });
+  }
 }
 
 // 전체 주문 처리
