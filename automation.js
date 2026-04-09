@@ -1739,80 +1739,50 @@ async function extractCartData(page) {
 
 // 부드럽게 페이지 아래로 스크롤하는 함수 (lazy loading 대응)
 async function smoothScrollToBottom(page) {
-  console.log('    Starting lazy-load aware scroll...');
+  console.log('    Starting blast-scroll to bottom...');
 
-  // 현재 아이템 개수 추적
-  let previousItemCount = 0;
-  let sameCountAttempts = 0;
-  const maxSameCountAttempts = 5;  // 연속 5번 같은 아이템 수면 완료로 판단
-  let scrollCount = 0;
-  const maxScrollAttempts = 50;  // 무한 루프 방지
-  const scrollDistance = 800;  // 한 번에 스크롤할 거리 (픽셀)
+  // ── Phase 1: 빠르게 끝까지 내려가 모든 lazy load 트리거 ──
+  // scrollHeight가 5회 연속 변화 없을 때까지 반복 (최대 60초)
+  let stableCount = 0;
+  const maxStable = 5;
+  let prevScrollHeight = 0;
+  let blastCount = 0;
+  const maxBlastMs = 60000;
+  const blastStart = Date.now();
 
-  while (scrollCount < maxScrollAttempts) {
-    scrollCount++;
+  while (Date.now() - blastStart < maxBlastMs) {
+    blastCount++;
 
-    // 현재 아이템 개수 확인
-    const currentItemCount = await page.evaluate(() => {
-      return document.querySelectorAll('label[class*="item--checkbox"]').length;
+    const { scrollHeight, atBottom } = await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+      return {
+        scrollHeight: document.body.scrollHeight,
+        atBottom: (window.innerHeight + window.scrollY) >= document.body.scrollHeight - 50
+      };
     });
 
-    // 점진적으로 스크롤 (바닥으로 점프하지 않고 조금씩)
-    await page.evaluate((distance) => {
-      window.scrollBy(0, distance);
-    }, scrollDistance);
+    console.log(`    Blast #${blastCount}: scrollHeight=${scrollHeight}, atBottom=${atBottom}`);
 
-    // 콘텐츠 로딩 대기 (lazy loading을 위해 충분히 대기)
-    await page.waitForTimeout(800);
-
-    // 새로운 아이템 개수 확인
-    const newItemCount = await page.evaluate(() => {
-      return document.querySelectorAll('label[class*="item--checkbox"]').length;
-    });
-
-    console.log(`    Scroll #${scrollCount}: items ${currentItemCount} -> ${newItemCount}`);
-
-    // 아이템 개수가 변하지 않으면 카운트 증가
-    if (newItemCount === previousItemCount) {
-      sameCountAttempts++;
-
-      // 페이지 끝에 도달했는지 확인
-      const isAtBottom = await page.evaluate(() => {
-        return (window.innerHeight + window.scrollY) >= document.body.scrollHeight - 100;
-      });
-
-      if (isAtBottom && sameCountAttempts >= maxSameCountAttempts) {
-        // 로딩 인디케이터가 아직 표시 중인지 확인
-        const isLoading = await page.evaluate(() => {
-          const indicator = document.querySelector('[class*="loadMoreIndicator"], [class*="loadMoreSpinner"]');
-          if (!indicator) return false;
-          const style = window.getComputedStyle(indicator);
-          return style.display !== 'none' && style.visibility !== 'hidden' && indicator.offsetHeight > 0;
-        });
-
-        if (isLoading) {
-          console.log(`    Loading indicator detected, waiting for more items...`);
-          sameCountAttempts = 0;  // 리셋하여 재시도
-          await page.waitForTimeout(1500);  // 로딩 대기
-          continue;
-        }
-
-        console.log(`    Scroll complete - no new items and no loading indicator`);
+    if (scrollHeight === prevScrollHeight) {
+      stableCount++;
+      if (stableCount >= maxStable) {
+        console.log(`    ScrollHeight stable for ${maxStable} checks, proceeding to loading wait...`);
         break;
       }
     } else {
-      sameCountAttempts = 0;  // 아이템이 늘었으면 카운트 리셋
+      stableCount = 0;  // 높이 변화 → 새 컨텐츠 로드됨, 리셋
     }
 
-    previousItemCount = newItemCount;
+    prevScrollHeight = scrollHeight;
+    await page.waitForTimeout(200);
   }
 
-  if (scrollCount >= maxScrollAttempts) {
-    console.log(`    Max scroll attempts (${maxScrollAttempts}) reached`);
+  if (Date.now() - blastStart >= maxBlastMs) {
+    console.log('    Blast phase timeout (60s)');
   }
 
-  // 스크롤 완료 후 로딩 인디케이터가 사라질 때까지 대기
-  for (let waitCount = 0; waitCount < 10; waitCount++) {
+  // ── Phase 2: 로딩 인디케이터가 사라질 때까지 대기 ──
+  for (let waitCount = 0; waitCount < 15; waitCount++) {
     const stillLoading = await page.evaluate(() => {
       const indicator = document.querySelector('[class*="loadMoreIndicator"], [class*="loadMoreSpinner"]');
       if (!indicator) return false;
@@ -1820,9 +1790,13 @@ async function smoothScrollToBottom(page) {
       return style.display !== 'none' && style.visibility !== 'hidden' && indicator.offsetHeight > 0;
     });
     if (!stillLoading) break;
-    console.log(`    Waiting for final loading to complete... (${waitCount + 1})`);
+    console.log(`    Waiting for loading indicator to clear... (${waitCount + 1})`);
+    // 로딩 중이면 한번 더 끝까지 스크롤해서 트리거 유지
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await page.waitForTimeout(1000);
   }
+
+  // 최종 안정화 대기
   await page.waitForTimeout(1500);
 
   // 최종 아이템 개수 확인
@@ -2021,16 +1995,16 @@ async function inputRefCodes(groupedData) {
                 quantity: item.quantity,
                 orderIndex: item.orderIndex
               });
-              // 매칭 성공한 orderIndex 기록
+              // 매칭 성공한 orderIndex 기록 (제출 확인 후 success 리스트에 병합)
               if (item.orderIndex !== undefined) {
-                successOrderIndexes.push(item.orderIndex);
+                currentBatchIndexes.push(item.orderIndex);
               }
               console.log(`        Added: ${item.orderCode} | ${item.orderNoDatePart} | ${item.orderNoRestPart}:${item.quantity} (orderIndex: ${item.orderIndex})`);
             });
 
-            // 성공한 offer_id 추가
-            if (!successGroups.includes(offerId)) {
-              successGroups.push(offerId);
+            // 성공한 offer_id 추가 (제출 확인 후 success 리스트에 병합)
+            if (!currentBatchGroups.includes(offerId)) {
+              currentBatchGroups.push(offerId);
             }
           } else {
             console.log(`      X No matching items`);
@@ -2268,6 +2242,9 @@ async function inputRefCodesV2(groupedData, userCode) {
     // ═══════════════════════════════════════
     while (true) {
       iterationCount++;
+      // 이번 배치에서 성공한 indexes/groups - 제출 확인 후에만 success 리스트에 병합
+      const currentBatchIndexes = [];
+      const currentBatchGroups = [];
       console.log(`\n${'='.repeat(50)}`);
       console.log(`ITERATION ${iterationCount}`);
       console.log('='.repeat(50));
@@ -2384,68 +2361,52 @@ async function inputRefCodesV2(groupedData, userCode) {
       const orderCount = await orderInners.count();
       console.log(`  Found ${orderCount} order(s) on page`);
 
-      for (let orderIdx = 0; orderIdx < orderCount; orderIdx++) {
-        const orderInner = orderInners.nth(orderIdx);
-        console.log(`\n  === Processing Order ${orderIdx + 1}/${orderCount} ===`);
+      // ── Phase 1: 1회 page.evaluate()로 모든 주문/상품/옵션 데이터 수집 ──
+      // (기존: 주문×상품×옵션 수만큼 브라우저 왕복 → 신규: 1회 왕복)
+      console.log('  [Batch] Collecting all order data in one evaluate call...');
+      const pageOrderData = await page.evaluate(() => {
+        return [...document.querySelectorAll('.order-inner')].map((orderEl, orderIdx) => ({
+          orderIdx,
+          offers: [...orderEl.querySelectorAll('.offer-container')].map(offerEl => ({
+            offerId: (() => {
+              const href = offerEl.querySelector('a[href*="offer/"]')?.getAttribute('href') || '';
+              const m = href.match(/offer\/(\d+)\.html/);
+              return m ? m[1] : null;
+            })(),
+            cargos: [...offerEl.querySelectorAll('.cargo-container')].map(cargoEl => ({
+              spec: cargoEl.querySelector('.cargo-spec')?.textContent?.trim() || ''
+            }))
+          }))
+        }));
+      });
+      console.log(`  [Batch] Collected ${pageOrderData.length} order(s) data`);
 
-        const offerContainers = orderInner.locator('.offer-container');
-        const offerCount = await offerContainers.count();
-        console.log(`  Found ${offerCount} offer(s) in this order`);
+      // ── Phase 2: Node.js에서 모든 매칭 처리 (브라우저 왕복 없음) ──
+      const freeSizeAliases = ['FREE', 'free', 'Free', '균码', '均码', 'F', '프리', '프리사이즈', 'FREESIZE', 'OneSize', 'OS'];
+      const isFreeSize = (s) => freeSizeAliases.some(alias => s.toUpperCase().includes(alias.toUpperCase()));
 
+      const textareaMap = new Map(); // orderIdx → memoText
+
+      for (const orderData of pageOrderData) {
+        const { orderIdx, offers } = orderData;
         const allRefCodes = [];
 
-        for (let offerIdx = 0; offerIdx < offerCount; offerIdx++) {
-          const offerContainer = offerContainers.nth(offerIdx);
-
-          const offerLink = offerContainer.locator('a[href*="offer/"]').first();
-          const hasLink = await offerLink.count() > 0;
-
-          if (!hasLink) {
-            console.log(`  Offer ${offerIdx + 1}: No offer link found`);
-            continue;
-          }
-
-          const href = await offerLink.getAttribute('href');
-          const offerIdMatch = href.match(/offer\/(\d+)\.html/);
-
-          if (!offerIdMatch) {
-            console.log(`  Offer ${offerIdx + 1}: Could not extract offer_id from ${href}`);
-            continue;
-          }
-
-          const offerId = offerIdMatch[1];
-          console.log(`\n  --- Offer ${offerIdx + 1}: ${offerId} ---`);
+        for (const offer of offers) {
+          const { offerId, cargos } = offer;
+          if (!offerId) { console.log(`  Order ${orderIdx + 1}: offer without ID, skipping`); continue; }
 
           const groupInfo = groupedData[offerId];
-          if (!groupInfo) {
-            console.log(`    X Not in our data, skipping`);
-            continue;
-          }
+          if (!groupInfo) { console.log(`  Order ${orderIdx + 1} / Offer ${offerId}: not in data, skipping`); continue; }
 
-          console.log(`    Found in data with ${groupInfo.items.length} item(s)`);
+          console.log(`  Order ${orderIdx + 1} / Offer ${offerId}: ${groupInfo.items.length} item(s), ${cargos.length} cargo(s)`);
 
-          const cargoContainers = offerContainer.locator('.cargo-container');
-          const cargoCount = await cargoContainers.count();
-          console.log(`    Found ${cargoCount} cargo(s)`);
-
-          for (let cargoIdx = 0; cargoIdx < cargoCount; cargoIdx++) {
-            const cargoContainer = cargoContainers.nth(cargoIdx);
-
-            const cargoSpec = cargoContainer.locator('.cargo-spec');
-            const hasSpec = await cargoSpec.count() > 0;
-
-            if (!hasSpec) {
-              console.log(`      Cargo ${cargoIdx + 1}: No spec found`);
-              continue;
-            }
-
-            const specText = await cargoSpec.textContent();
-            console.log(`      Cargo ${cargoIdx + 1} spec: "${specText}"`);
+          for (const cargo of cargos) {
+            const { spec } = cargo;
+            if (!spec) continue;
 
             let color = '';
             let size = '';
-
-            const specParts = specText.split(';').map(s => s.trim());
+            const specParts = spec.split(';').map(s => s.trim());
             for (const part of specParts) {
               if (part.includes('颜色:') || part.includes('色:')) {
                 color = part.replace(/颜色:|色:/g, '').trim();
@@ -2453,11 +2414,6 @@ async function inputRefCodesV2(groupedData, userCode) {
                 size = part.replace(/尺码:|码:/g, '').trim();
               }
             }
-
-            console.log(`      Extracted: Color="${color}", Size="${size}"`);
-
-            const freeSizeAliases = ['FREE', 'free', 'Free', '균码', '均码', 'F', '프리', '프리사이즈', 'FREESIZE', 'OneSize', 'OS'];
-            const isFreeSize = (s) => freeSizeAliases.some(alias => s.toUpperCase().includes(alias.toUpperCase()));
 
             const normalizedColor = color.replace(/\s+/g, ' ').trim();
 
@@ -2468,10 +2424,8 @@ async function inputRefCodesV2(groupedData, userCode) {
               let sizeMatch = false;
               const normalizedItemSize = (item.size || '').replace(/\s+/g, ' ').trim();
               const normalizedSize = size.replace(/\s+/g, ' ').trim();
-              const itemIsFree = isFreeSize(normalizedItemSize);
-              const cargoIsFree = isFreeSize(normalizedSize);
 
-              if (itemIsFree && cargoIsFree) {
+              if (isFreeSize(normalizedItemSize) && isFreeSize(normalizedSize)) {
                 sizeMatch = true;
               } else if (normalizedSize.includes(normalizedItemSize) || normalizedItemSize.includes(normalizedSize)) {
                 sizeMatch = true;
@@ -2479,99 +2433,82 @@ async function inputRefCodesV2(groupedData, userCode) {
                 sizeMatch = true;
               }
 
-              console.log(`        Comparing Item(${normalizedItemColor}|${normalizedItemSize}) vs Cargo(${normalizedColor}|${normalizedSize}) = ${colorMatch && sizeMatch}`);
+              // 2XL ↔ XXL 변환 매칭
+              if (!sizeMatch) {
+                const convertedSize = convertXLSize(normalizedSize) || convertXLSize(normalizedItemSize);
+                if (convertedSize) {
+                  sizeMatch = normalizedItemSize === convertedSize || normalizedSize === convertedSize
+                            || normalizedSize.includes(convertedSize) || normalizedItemSize.includes(convertedSize);
+                }
+              }
+
+              console.log(`    Cargo(${normalizedColor}|${normalizedSize}) vs Item(${normalizedItemColor}|${normalizedItemSize}) = ${colorMatch && sizeMatch}`);
               return colorMatch && sizeMatch;
             });
 
-            if (matchingItems.length > 0) {
-              console.log(`      Found ${matchingItems.length} matching item(s)`);
-              matchingItems.forEach(item => {
-                if (item.orderIndex !== undefined && successOrderIndexes.includes(item.orderIndex)) {
-                  console.log(`        Skipped (already added): orderIndex ${item.orderIndex}`);
-                  return;
-                }
-
-                allRefCodes.push({
-                  orderCode: item.orderCode,
-                  orderNoDatePart: item.orderNoDatePart,
-                  orderNoRestPart: item.orderNoRestPart,
-                  quantity: item.quantity,
-                  orderIndex: item.orderIndex
-                });
-
-                if (item.orderIndex !== undefined) {
-                  successOrderIndexes.push(item.orderIndex);
-                }
-                console.log(`        Added: ${item.orderCode} | ${item.orderNoDatePart} | ${item.orderNoRestPart}:${item.quantity} (orderIndex: ${item.orderIndex})`);
-              });
-
-              if (!successGroups.includes(offerId)) {
-                successGroups.push(offerId);
+            matchingItems.forEach(item => {
+              if (item.orderIndex !== undefined && (successOrderIndexes.includes(item.orderIndex) || currentBatchIndexes.includes(item.orderIndex))) {
+                console.log(`    Skipped (already added): orderIndex ${item.orderIndex}`);
+                return;
               }
-            } else {
-              console.log(`      X No matching items`);
-            }
+              allRefCodes.push({
+                orderCode: item.orderCode,
+                orderNoDatePart: item.orderNoDatePart,
+                orderNoRestPart: item.orderNoRestPart,
+                quantity: item.quantity,
+                orderIndex: item.orderIndex
+              });
+              if (item.orderIndex !== undefined) currentBatchIndexes.push(item.orderIndex);
+              if (!currentBatchGroups.includes(offerId)) currentBatchGroups.push(offerId);
+              console.log(`    Added: ${item.orderCode} | ${item.orderNoDatePart} | ${item.orderNoRestPart}:${item.quantity} (orderIndex: ${item.orderIndex})`);
+            });
           }
         }
 
-        // textarea에 참조코드 입력
         if (allRefCodes.length > 0) {
-          console.log(`\n  Total ${allRefCodes.length} ref code(s) to input for this order`);
-
           allRefCodes.sort((a, b) => a.orderIndex - b.orderIndex);
-          console.log('  Sorted by orderIndex:', allRefCodes.map(i => `${i.orderNoRestPart}:${i.quantity} (idx:${i.orderIndex})`).join(', '));
-
-          const groupedRefCodes = [];
           const groupMap = new Map();
-
+          const groupedRefCodes = [];
           allRefCodes.forEach(item => {
             const key = `${item.orderCode}|${item.orderNoDatePart}`;
             if (!groupMap.has(key)) {
-              const group = {
-                orderCode: item.orderCode,
-                orderNoDatePart: item.orderNoDatePart,
-                restParts: []
-              };
+              const group = { orderCode: item.orderCode, orderNoDatePart: item.orderNoDatePart, restParts: [] };
               groupMap.set(key, group);
               groupedRefCodes.push(group);
             }
             groupMap.get(key).restParts.push(`${item.orderNoRestPart}:${item.quantity}`);
           });
-
-          const memoLines = groupedRefCodes.map(group => {
-            return `${group.orderCode} | ${group.orderNoDatePart} | ${group.restParts.join(', ')}`;
-          });
-          const memoText = memoLines.join('\n');
-          console.log(`  Combined memo text:\n${memoText}`);
-
-          const textarea = orderInner.locator('.order-footer .leave-message-container .q-textarea textarea').first();
-          const textareaFound = await textarea.count() > 0;
-
-          console.log(`  Textarea in order-footer found: ${textareaFound}`);
-
-          if (textareaFound) {
-            console.log(`  Attempting to input ref codes...`);
-            await textarea.scrollIntoViewIfNeeded();
-            await page.waitForTimeout(300);
-            await textarea.click();
-            await page.waitForTimeout(200);
-            await textarea.fill(memoText);
-            await page.waitForTimeout(500);
-
-            const inputValue = await textarea.inputValue();
-            console.log(`  Input verification: ${inputValue.length} chars`);
-
-            if (inputValue === memoText) {
-              console.log(`  + Ref codes inputted successfully`);
-            } else {
-              console.log(`  ! Input may not match exactly`);
-              console.log(`  Expected length: ${memoText.length}, Got: ${inputValue.length}`);
-            }
-          } else {
-            console.log(`  X Textarea not found in order-footer`);
-          }
+          const memoText = groupedRefCodes.map(g => `${g.orderCode} | ${g.orderNoDatePart} | ${g.restParts.join(', ')}`).join('\n');
+          textareaMap.set(orderIdx, memoText);
+          console.log(`  Order ${orderIdx + 1}: memoText ready (${allRefCodes.length} codes)`);
         } else {
-          console.log(`\n  No ref codes to input for this order`);
+          console.log(`  Order ${orderIdx + 1}: no matching ref codes`);
+        }
+      }
+
+      // ── Phase 3: 계산된 memoText로 textarea 일괄 입력 ──
+      console.log(`  [Batch] Filling ${textareaMap.size}/${orderCount} textarea(s)...`);
+      for (const [orderIdx, memoText] of textareaMap) {
+        const orderInner = orderInners.nth(orderIdx);
+        const textarea = orderInner.locator('.order-footer .leave-message-container .q-textarea textarea').first();
+
+        if (await textarea.count() === 0) {
+          console.log(`  Order ${orderIdx + 1}: X Textarea not found`);
+          continue;
+        }
+
+        await textarea.scrollIntoViewIfNeeded();
+        await page.waitForTimeout(300);
+        await textarea.click();
+        await page.waitForTimeout(200);
+        await textarea.fill(memoText);
+        await page.waitForTimeout(300);
+
+        const inputValue = await textarea.inputValue();
+        if (inputValue === memoText) {
+          console.log(`  Order ${orderIdx + 1}: + Input OK (${inputValue.length} chars)`);
+        } else {
+          console.log(`  Order ${orderIdx + 1}: ! Mismatch (expected: ${memoText.length}, got: ${inputValue.length})`);
         }
       }
 
@@ -2674,8 +2611,17 @@ async function inputRefCodesV2(groupedData, userCode) {
         }
       }
       if (!submissionDetected) {
-        console.log('  ! Success page not detected within 30s, proceeding anyway...');
+        // 제출 미확인 → 이번 배치를 성공 처리하지 않고 중단 (이중 주문 방지)
+        exitReason = '주문 제출 확인 실패 (success URL 미감지 30초)';
+        console.log(`  X ${exitReason} - 이번 배치(${currentBatchIndexes.length}건) 성공 처리 안 함`);
+        break;
       }
+
+      // 제출 확인 완료 → 이번 배치를 success 리스트에 병합
+      currentBatchIndexes.forEach(idx => successOrderIndexes.push(idx));
+      currentBatchGroups.forEach(g => { if (!successGroups.includes(g)) successGroups.push(g); });
+      console.log(`  + Batch confirmed: ${currentBatchIndexes.length}건 성공 처리 (누적: ${successOrderIndexes.length}건)`);
+
       await page.waitForTimeout(5000);
       console.log('  + Submission wait completed');
 

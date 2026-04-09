@@ -3518,7 +3518,9 @@ async function saveToSupabase() {
         order.dbData.master_account = selectedMasterAccount;
       }
 
-      return order.dbData;
+      // invoiceManager_1688_orders에 없는 컬럼 제외
+      const { raw_date, ...dbDataClean } = order.dbData;
+      return dbDataClean;
     }).filter(data => data !== null);
 
     console.log(`저장할 데이터 개수: ${dataToInsert.length}`);
