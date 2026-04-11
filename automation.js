@@ -2729,22 +2729,21 @@ async function selectShopCheckboxes(page) {
         ? `  + All ${shopCount} shops checked via 全选`
         : `  ! Warning: Some items may not be checked after 20s`);
     } else {
-      console.log('  X 全选 header checkbox not found, falling back to one-by-one');
-      await selectShopCheckboxesOneByOne(page, shopCount);
+      console.log('  X 全选 header checkbox not found → falling back to batch method');
+      await selectShopCheckboxesBatch(page, shopCount);
     }
     return;
   }
 
-  // ── 24개 초과: 일괄 batch 선택 (실패 시 one-by-one fallback) ──
+  // ── 24개 초과: 일괄 batch 선택 (첫 24개 한 번에) ──
   console.log(`  Found ${shopCount} shop(s) (>24), using batch selection`);
   await selectShopCheckboxesBatch(page, shopCount);
 }
 
 // ========================================
-// 상점 체크박스 일괄 선택 (첫 24개 상점을 한 번에 클릭)
+// 상점 체크박스 일괄 선택 (최대 24개 상점을 한 번에 클릭)
 // - page.evaluate() 1회로 모든 click 이벤트 동기 발생 → 서버 왕복 1번
 // - 단일 폴링 루프로 전체 체크 완료 대기 (최대 30초)
-// - 실패 시 기존 one-by-one fallback
 // ========================================
 async function selectShopCheckboxesBatch(page, shopCount) {
   const targetCount = Math.min(shopCount, 24);
@@ -2799,98 +2798,12 @@ async function selectShopCheckboxesBatch(page, shopCount) {
     }
   }
 
-  // ── Step 3: 실패 시 one-by-one fallback ──
+  // ── Step 3: 결과 로깅 (실패 시 경고만, fallback 없음) ──
   if (!allChecked) {
-    console.log('  [Batch] Some checkboxes failed → falling back to one-by-one');
-    await selectShopCheckboxesOneByOne(page, shopCount);
-    return;
+    console.log('  [Batch] ! Warning: batch timeout - some checkboxes may not be checked');
+  } else {
+    console.log(`  [Batch] All ${targetCount} shops checked successfully`);
   }
-
-  console.log(`  [Batch] All ${targetCount} shops checked successfully`);
-}
-
-// ========================================
-// 상점별 개별 체크박스 선택 (>24개일 때 사용)
-// - 스크롤 → 뷰포트 진입 → 렌더링 확인 → 클릭 → 폴링
-// ========================================
-async function selectShopCheckboxesOneByOne(page, shopCount) {
-  const shopSelector = '[class*="shop-container--container"]';
-  const sellerCheckboxSelector = '[class*="companyWrapper"] .next-checkbox-input';
-  const itemCheckboxSelector = '[class*="item-group-container--container"] .next-checkbox-input';
-  const targetCount = Math.min(shopCount, 24);
-
-  console.log(`  Processing ${targetCount} of ${shopCount} shop(s) one by one`);
-
-  for (let i = 0; i < targetCount; i++) {
-    const shopBlock = page.locator(shopSelector).nth(i);
-
-    // 상점 위치로 스크롤
-    await shopBlock.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(500);
-
-    // 판매자 체크박스 찾기
-    const sellerCheckbox = shopBlock.locator(sellerCheckboxSelector).first();
-    const sellerCheckboxCount = await sellerCheckbox.count();
-
-    if (sellerCheckboxCount === 0) {
-      console.log(`  [${i + 1}/${targetCount}] No seller checkbox found, skipping`);
-      continue;
-    }
-
-    // 이미 체크 여부 확인
-    const isAlreadyChecked = await page.evaluate(({ shopIndex, shopSel }) => {
-      const shop = document.querySelectorAll(shopSel)[shopIndex];
-      if (!shop) return false;
-      const wrapper = shop.querySelector('[class*="companyWrapper"] .next-checkbox-wrapper');
-      return wrapper && wrapper.classList.contains('checked');
-    }, { shopIndex: i, shopSel: shopSelector });
-
-    if (isAlreadyChecked) {
-      console.log(`  [${i + 1}/${targetCount}] Already checked, skipping`);
-      await page.waitForTimeout(500);
-      continue;
-    }
-
-    // 하위 아이템 체크박스 개수 확인
-    const itemCheckboxCount = await shopBlock.locator(itemCheckboxSelector).count();
-
-    console.log(`  [${i + 1}/${targetCount}] Clicking seller checkbox (${itemCheckboxCount} items)...`);
-    await sellerCheckbox.click({ force: true });
-
-    // 하위 아이템 전체 체크될 때까지 폴링 (500ms × 40 = 20초)
-    let allChecked = false;
-    for (let checkCount = 0; checkCount < 40; checkCount++) {
-      await page.waitForTimeout(500);
-
-      allChecked = await page.evaluate(({ shopIndex, shopSel, itemSel }) => {
-        const shop = document.querySelectorAll(shopSel)[shopIndex];
-        if (!shop) return true;
-        const itemCheckboxes = shop.querySelectorAll(itemSel);
-        if (itemCheckboxes.length === 0) return true;
-
-        for (const cb of itemCheckboxes) {
-          const label = cb.closest('.next-checkbox-wrapper');
-          const isChecked = (label && label.classList.contains('checked'))
-                         || cb.getAttribute('aria-checked') === 'true';
-          if (!isChecked) return false;
-        }
-        return true;
-      }, { shopIndex: i, shopSel: shopSelector, itemSel: itemCheckboxSelector });
-
-      if (allChecked) break;
-    }
-
-    if (allChecked) {
-      console.log(`  [${i + 1}/${targetCount}] All items checked`);
-    } else {
-      console.log(`  [${i + 1}/${targetCount}] Warning: Timeout - some items may not be checked`);
-    }
-
-    // 안정화 대기 후 다음 상점
-    await page.waitForTimeout(1500);
-  }
-
-  console.log(`+ Shop checkbox selection completed (${targetCount} shops processed)`);
 }
 
 // ========================================
