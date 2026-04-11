@@ -2324,6 +2324,7 @@ async function inputRefCodesV2(groupedData, userCode) {
       const settleBtnSelector = '[class*="bottom-bar--submitBtn"]';
       let settleReady = false;
       for (let pollCount = 0; pollCount < 30; pollCount++) {
+        checkShouldStop();
         await page.waitForTimeout(1000);
         const btn = page.locator(settleBtnSelector).first();
         if (await btn.count() === 0) continue;
@@ -2688,10 +2689,72 @@ async function inputRefCodesV2(groupedData, userCode) {
 // - ≤24개: 헤더 全选 체크박스로 한번에 선택 (빠름, ~3초)
 // - >24개: 상점별 개별 클릭 (lazy loading 대응, 최대 24개)
 // ========================================
+// 상점 lazy-load 트리거: 최소 targetCount개 상점이 DOM에 나타날 때까지 스크롤
+// - 1688 카트는 하단으로 스크롤해야 더 많은 상점이 렌더링됨
+// - 이미 targetCount 이상이면 즉시 반환
+// - 연속 stableChecks 회 동안 증가 없으면 종료 (더 이상 없음)
+// ========================================
+async function scrollUntilShopCount(page, targetCount, maxMs = 60000) {
+  const shopSelector = '[class*="shop-container--container"]';
+  const initial = await page.locator(shopSelector).count();
+  console.log(`  [Scroll] Initial shop count: ${initial}, target: ${targetCount}`);
+
+  if (initial >= targetCount) {
+    console.log(`  [Scroll] Already have ${initial} shops (≥${targetCount}), skipping scroll`);
+    return initial;
+  }
+
+  const start = Date.now();
+  let prevCount = initial;
+  let stableCount = 0;
+  const maxStable = 8; // 연속 8회(약 3초) 동안 변화 없으면 종료
+  let loopNo = 0;
+
+  while (Date.now() - start < maxMs) {
+    checkShouldStop();
+    loopNo++;
+
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(400);
+
+    const current = await page.locator(shopSelector).count();
+    console.log(`  [Scroll] #${loopNo}: shops=${current}`);
+
+    if (current >= targetCount) {
+      console.log(`  [Scroll] Reached target: ${current} shops`);
+      return current;
+    }
+
+    if (current === prevCount) {
+      stableCount++;
+      if (stableCount >= maxStable) {
+        console.log(`  [Scroll] Stable at ${current} shops (no more to load)`);
+        return current;
+      }
+    } else {
+      stableCount = 0;
+    }
+    prevCount = current;
+  }
+
+  console.log(`  [Scroll] Timeout (${maxMs}ms), final count: ${prevCount}`);
+  return prevCount;
+}
+
+// ========================================
 async function selectShopCheckboxes(page) {
   const shopSelector = '[class*="shop-container--container"]';
   const itemCheckboxSelector = '[class*="item-group-container--container"] .next-checkbox-input';
+
+  // ── 스크롤로 최소 24개 상점 lazy-load ──
+  await scrollUntilShopCount(page, 24);
+
+  // 스크롤 후 맨 위로 복귀 (체크박스 클릭 안정화)
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(800);
+
   const shopCount = await page.locator(shopSelector).count();
+  console.log(`  After scroll-load: ${shopCount} shop(s) detected`);
 
   // ── 24개 이하: 全选 헤더 체크박스로 한번에 선택 ──
   if (shopCount <= 24) {
@@ -2710,6 +2773,7 @@ async function selectShopCheckboxes(page) {
       // 폴링: 모든 아이템 체크될 때까지 대기 (500ms × 40 = 20초)
       let allChecked = false;
       for (let checkCount = 0; checkCount < 40; checkCount++) {
+        checkShouldStop();
         await page.waitForTimeout(500);
         allChecked = await page.evaluate(({ itemSel }) => {
           const checkboxes = document.querySelectorAll(itemSel);
@@ -2769,6 +2833,7 @@ async function selectShopCheckboxesBatch(page, shopCount) {
   // ── Step 2: 단일 폴링 루프 (500ms × 60 = 최대 30초) ──
   let allChecked = false;
   for (let i = 0; i < 60; i++) {
+    checkShouldStop();
     await page.waitForTimeout(500);
     const status = await page.evaluate((maxN) => {
       const shops = document.querySelectorAll('[class*="shop-container--container"]');
