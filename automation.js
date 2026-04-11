@@ -1741,69 +1741,81 @@ async function extractCartData(page) {
 async function smoothScrollToBottom(page) {
   console.log('    Starting blast-scroll to bottom...');
 
-  // ── Phase 1: 빠르게 끝까지 내려가 모든 lazy load 트리거 ──
-  // scrollHeight가 5회 연속 변화 없을 때까지 반복 (최대 60초)
+  // ── 헬퍼: 현재 페이지 상태 스냅샷 ──
+  // scrollHeight + itemCount + shopCount + 로딩 인디케이터 여부를 한 번에 조회
+  async function snapshot(triggerScroll) {
+    return await page.evaluate((scroll) => {
+      if (scroll) window.scrollTo(0, document.body.scrollHeight);
+      const indicator = document.querySelector(
+        '[class*="loadMoreIndicator"], [class*="loadMoreSpinner"], [class*="next-loading"], [class*="nc-loading"]'
+      );
+      let loading = false;
+      if (indicator) {
+        const style = window.getComputedStyle(indicator);
+        loading = style.display !== 'none' && style.visibility !== 'hidden' && indicator.offsetHeight > 0;
+      }
+      return {
+        h: document.body.scrollHeight,
+        items: document.querySelectorAll('label[class*="item--checkbox"]').length,
+        shops: document.querySelectorAll('[class*="shop-container--container"]').length,
+        loading
+      };
+    }, triggerScroll);
+  }
+
+  // ── Phase 1: 끝까지 스크롤 + 다중 지표 안정화 대기 ──
+  // 조건: scrollHeight + itemCount + shopCount 모두 maxStable(=10)회 연속 동일 + 로딩 인디케이터 없음
+  const maxStable = 10;
+  const pollInterval = 400;
+  const maxBlastMs = 90000;
+
   let stableCount = 0;
-  const maxStable = 5;
-  let prevScrollHeight = 0;
+  let prev = { h: 0, items: 0, shops: 0, loading: false };
   let blastCount = 0;
-  const maxBlastMs = 60000;
   const blastStart = Date.now();
 
   while (Date.now() - blastStart < maxBlastMs) {
     blastCount++;
+    const snap = await snapshot(true);
 
-    const { scrollHeight, atBottom } = await page.evaluate(() => {
-      window.scrollTo(0, document.body.scrollHeight);
-      return {
-        scrollHeight: document.body.scrollHeight,
-        atBottom: (window.innerHeight + window.scrollY) >= document.body.scrollHeight - 50
-      };
-    });
+    const allSame = snap.h === prev.h && snap.items === prev.items && snap.shops === prev.shops;
+    console.log(`    Blast #${blastCount}: h=${snap.h}, items=${snap.items}, shops=${snap.shops}, loading=${snap.loading}, stable=${stableCount}`);
 
-    console.log(`    Blast #${blastCount}: scrollHeight=${scrollHeight}, atBottom=${atBottom}`);
-
-    if (scrollHeight === prevScrollHeight) {
+    if (allSame && !snap.loading) {
       stableCount++;
       if (stableCount >= maxStable) {
-        console.log(`    ScrollHeight stable for ${maxStable} checks, proceeding to loading wait...`);
+        console.log(`    All metrics stable for ${maxStable} checks, proceeding to Phase 2...`);
         break;
       }
     } else {
-      stableCount = 0;  // 높이 변화 → 새 컨텐츠 로드됨, 리셋
+      stableCount = 0; // 변화 감지 또는 로딩 중 → 리셋
     }
 
-    prevScrollHeight = scrollHeight;
-    await page.waitForTimeout(200);
+    prev = snap;
+    await page.waitForTimeout(pollInterval);
   }
 
   if (Date.now() - blastStart >= maxBlastMs) {
-    console.log('    Blast phase timeout (60s)');
+    console.log('    Blast phase timeout (90s)');
   }
 
-  // ── Phase 2: 로딩 인디케이터가 사라질 때까지 대기 ──
+  // ── Phase 2: 로딩 인디케이터 잔류 확인 (새 아이템 추가 감지 시 Phase 1 복귀) ──
   for (let waitCount = 0; waitCount < 15; waitCount++) {
-    const stillLoading = await page.evaluate(() => {
-      const indicator = document.querySelector('[class*="loadMoreIndicator"], [class*="loadMoreSpinner"]');
-      if (!indicator) return false;
-      const style = window.getComputedStyle(indicator);
-      return style.display !== 'none' && style.visibility !== 'hidden' && indicator.offsetHeight > 0;
-    });
-    if (!stillLoading) break;
-    console.log(`    Waiting for loading indicator to clear... (${waitCount + 1})`);
-    // 로딩 중이면 한번 더 끝까지 스크롤해서 트리거 유지
+    const snap = await snapshot(false);
+    if (!snap.loading && snap.items === prev.items && snap.shops === prev.shops) break;
+
+    console.log(`    Phase 2 wait #${waitCount + 1}: loading=${snap.loading}, items=${snap.items}, shops=${snap.shops}`);
+    // 여전히 로딩 중이거나 새 컨텐츠가 나타나면 스크롤 한 번 더 트리거
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await page.waitForTimeout(1000);
+    prev = snap;
   }
 
-  // 최종 안정화 대기
+  // ── Phase 3: 최종 안정화 대기 + 결과 로깅 ──
   await page.waitForTimeout(1500);
 
-  // 최종 아이템 개수 확인
-  const finalItemCount = await page.evaluate(() => {
-    return document.querySelectorAll('label[class*="item--checkbox"]').length;
-  });
-  console.log(`    Final cart item count: ${finalItemCount}`);
+  const final = await snapshot(false);
+  console.log(`    Final: items=${final.items}, shops=${final.shops}, scrollHeight=${final.h}`);
 }
 
 // 중단 함수
@@ -2723,9 +2735,78 @@ async function selectShopCheckboxes(page) {
     return;
   }
 
-  // ── 24개 초과: 상점별 개별 선택 (최대 24개) ──
-  console.log(`  Found ${shopCount} shop(s) (>24), selecting first 24 one by one`);
-  await selectShopCheckboxesOneByOne(page, shopCount);
+  // ── 24개 초과: 일괄 batch 선택 (실패 시 one-by-one fallback) ──
+  console.log(`  Found ${shopCount} shop(s) (>24), using batch selection`);
+  await selectShopCheckboxesBatch(page, shopCount);
+}
+
+// ========================================
+// 상점 체크박스 일괄 선택 (첫 24개 상점을 한 번에 클릭)
+// - page.evaluate() 1회로 모든 click 이벤트 동기 발생 → 서버 왕복 1번
+// - 단일 폴링 루프로 전체 체크 완료 대기 (최대 30초)
+// - 실패 시 기존 one-by-one fallback
+// ========================================
+async function selectShopCheckboxesBatch(page, shopCount) {
+  const targetCount = Math.min(shopCount, 24);
+  console.log(`  [Batch] Clicking ${targetCount} seller checkboxes at once...`);
+
+  // ── Step 1: 첫 N개 상점의 판매자 체크박스를 DOM에서 직접 click ──
+  const clickedCount = await page.evaluate((maxN) => {
+    const shops = document.querySelectorAll('[class*="shop-container--container"]');
+    let clicked = 0;
+    for (let i = 0; i < Math.min(shops.length, maxN); i++) {
+      const wrapper = shops[i].querySelector('[class*="companyWrapper"] .next-checkbox-wrapper');
+      if (!wrapper) continue;
+      if (wrapper.classList.contains('checked')) { clicked++; continue; }
+      const input = wrapper.querySelector('input[type="checkbox"]');
+      if (input) { input.click(); clicked++; }
+      else { wrapper.click(); clicked++; }
+    }
+    return clicked;
+  }, targetCount);
+
+  console.log(`  [Batch] Dispatched ${clickedCount} clicks`);
+
+  // ── Step 2: 단일 폴링 루프 (500ms × 60 = 최대 30초) ──
+  let allChecked = false;
+  for (let i = 0; i < 60; i++) {
+    await page.waitForTimeout(500);
+    const status = await page.evaluate((maxN) => {
+      const shops = document.querySelectorAll('[class*="shop-container--container"]');
+      let checkedShops = 0;
+      let totalItems = 0;
+      let checkedItems = 0;
+      const limit = Math.min(shops.length, maxN);
+      for (let i = 0; i < limit; i++) {
+        const sw = shops[i].querySelector('[class*="companyWrapper"] .next-checkbox-wrapper');
+        if (sw && sw.classList.contains('checked')) checkedShops++;
+        const items = shops[i].querySelectorAll('[class*="item-group-container--container"] .next-checkbox-input');
+        for (const cb of items) {
+          totalItems++;
+          const lbl = cb.closest('.next-checkbox-wrapper');
+          if ((lbl && lbl.classList.contains('checked')) || cb.getAttribute('aria-checked') === 'true') {
+            checkedItems++;
+          }
+        }
+      }
+      return { checkedShops, totalItems, checkedItems };
+    }, targetCount);
+
+    if (status.checkedShops === targetCount && status.totalItems > 0 && status.checkedItems === status.totalItems) {
+      allChecked = true;
+      console.log(`  [Batch] All checked — shops=${status.checkedShops}/${targetCount}, items=${status.checkedItems}/${status.totalItems}`);
+      break;
+    }
+  }
+
+  // ── Step 3: 실패 시 one-by-one fallback ──
+  if (!allChecked) {
+    console.log('  [Batch] Some checkboxes failed → falling back to one-by-one');
+    await selectShopCheckboxesOneByOne(page, shopCount);
+    return;
+  }
+
+  console.log(`  [Batch] All ${targetCount} shops checked successfully`);
 }
 
 // ========================================
