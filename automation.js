@@ -2788,30 +2788,25 @@ async function selectShopCheckboxes(page) {
 }
 
 // ========================================
-// 상점 체크박스 일괄 선택 (최대 24개 상점을 한 번에 클릭)
-// - page.evaluate() 1회로 모든 click 이벤트 동기 발생 → 서버 왕복 1번
+// 상점 체크박스 일괄 선택 (최대 24개 상점을 동시에 클릭)
+// - Promise.all로 모든 Playwright 클릭을 동시에 실행 (CDP 병렬 전송)
 // - 단일 폴링 루프로 전체 체크 완료 대기 (최대 30초)
 // ========================================
 async function selectShopCheckboxesBatch(page, shopCount) {
+  const shopSelector = '[class*="shop-container--container"]';
+  const sellerCheckboxSelector = '[class*="companyWrapper"] .next-checkbox-input';
   const targetCount = Math.min(shopCount, 24);
-  console.log(`  [Batch] Clicking ${targetCount} seller checkboxes at once...`);
+  console.log(`  [Batch] Clicking ${targetCount} seller checkboxes simultaneously...`);
 
-  // ── Step 1: 첫 N개 상점의 판매자 체크박스를 DOM에서 직접 click ──
-  const clickedCount = await page.evaluate((maxN) => {
-    const shops = document.querySelectorAll('[class*="shop-container--container"]');
-    let clicked = 0;
-    for (let i = 0; i < Math.min(shops.length, maxN); i++) {
-      const wrapper = shops[i].querySelector('[class*="companyWrapper"] .next-checkbox-wrapper');
-      if (!wrapper) continue;
-      if (wrapper.classList.contains('checked')) { clicked++; continue; }
-      const input = wrapper.querySelector('input[type="checkbox"]');
-      if (input) { input.click(); clicked++; }
-      else { wrapper.click(); clicked++; }
-    }
-    return clicked;
-  }, targetCount);
-
-  console.log(`  [Batch] Dispatched ${clickedCount} clicks`);
+  // ── Step 1: 체크 안 된 상점만 필터링 후 동시 클릭 ──
+  const clickPromises = [];
+  for (let i = 0; i < targetCount; i++) {
+    const shop = page.locator(shopSelector).nth(i);
+    const checkbox = shop.locator(sellerCheckboxSelector).first();
+    clickPromises.push(checkbox.click({ force: true }).catch(() => null));
+  }
+  await Promise.all(clickPromises);
+  console.log(`  [Batch] ${clickPromises.length} clicks dispatched simultaneously`);
 
   // ── Step 2: 단일 폴링 루프 (500ms × 60 = 최대 30초) ──
   let allChecked = false;
