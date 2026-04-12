@@ -2772,19 +2772,56 @@ async function scrollUntilShopCount(page, targetCount, maxMs = 60000) {
 // ========================================
 async function selectShopCheckboxes(page) {
   const shopSelector = '[class*="shop-container--container"]';
+  const itemCheckboxSelector = '[class*="item-group-container--container"] .next-checkbox-input';
 
   // ── Step 1: 스크롤로 최대 24개 상점 lazy-load ──
   await scrollUntilShopCount(page, 24);
 
-  // ── Step 2: 맨 위로 복귀 (체크박스 안정화) ──
+  // ── Step 2: 맨 위로 복귀 ──
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(800);
 
-  // ── Step 3: 무조건 batch 선택 (全选 헤더 사용하지 않음) ──
-  // 1688 UI의 全选은 내부적으로 순차 처리하므로 느림 → DOM 직접 클릭이 동시 처리됨
   const shopCount = await page.locator(shopSelector).count();
-  console.log(`  After scroll-load: ${shopCount} shop(s) → using batch selection`);
-  await selectShopCheckboxesBatch(page, shopCount);
+  console.log(`  After scroll-load: ${shopCount} shop(s) detected`);
+
+  // ── Step 3: 全选 헤더 체크박스로 한 번에 선택 ──
+  // 全选은 서버에 "전체 선택" 요청을 1번만 보내서 동시 처리됨
+  // 개별 클릭은 서버 상태 충돌로 마지막 1개만 반영됨
+  const selectAllCb = page.locator('th[class*="colCheckbox"] .next-checkbox-input');
+  if (await selectAllCb.count() > 0) {
+    const isChecked = await selectAllCb.isChecked().catch(() => false);
+    if (!isChecked) {
+      await selectAllCb.click({ force: true });
+      console.log('  + 全选 checkbox clicked');
+    } else {
+      console.log('  + 全选 already checked');
+    }
+
+    // ── Step 4: 모든 아이템 체크 완료 대기 (500ms × 60 = 최대 30초) ──
+    let allChecked = false;
+    for (let checkCount = 0; checkCount < 60; checkCount++) {
+      checkShouldStop();
+      await page.waitForTimeout(500);
+      allChecked = await page.evaluate(({ itemSel }) => {
+        const checkboxes = document.querySelectorAll(itemSel);
+        if (checkboxes.length === 0) return true;
+        for (const cb of checkboxes) {
+          const label = cb.closest('.next-checkbox-wrapper');
+          const checked = (label && label.classList.contains('checked'))
+                       || cb.getAttribute('aria-checked') === 'true';
+          if (!checked) return false;
+        }
+        return true;
+      }, { itemSel: itemCheckboxSelector });
+      if (allChecked) break;
+    }
+
+    console.log(allChecked
+      ? `  + All ${shopCount} shops checked via 全选`
+      : `  ! Warning: Some items may not be checked after 30s`);
+  } else {
+    console.log('  X 全选 header checkbox not found');
+  }
 }
 
 // ========================================
