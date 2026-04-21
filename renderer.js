@@ -631,7 +631,12 @@ function updateDataInputState() {
   const isFtUserSelected = ftUserSelect && ftUserSelect.value !== '';
   const bothSelected = isUserSelected && isFtUserSelected;
 
-  if (bothSelected) {
+  // 두 드롭박스의 user_code 비교
+  const userCode = userSelect?.selectedOptions[0]?.dataset.userCode || '';
+  const ftUserCode = ftUserSelect?.selectedOptions[0]?.dataset.userCode || '';
+  const codesMatch = userCode && ftUserCode && userCode === ftUserCode;
+
+  if (bothSelected && codesMatch) {
     dataInput.disabled = false;
     dataInput.style.opacity = '1';
     dataInput.placeholder = '구글 시트에서 행 전체를 선택하고 복사(Ctrl+C) 후 여기에 붙여넣기(Ctrl+V)';
@@ -639,7 +644,11 @@ function updateDataInputState() {
   } else {
     dataInput.disabled = true;
     dataInput.style.opacity = '0.5';
-    dataInput.placeholder = '먼저 위에서 사용자와 유저를 모두 선택해주세요';
+    if (bothSelected && !codesMatch) {
+      dataInput.placeholder = `user_code 불일치: 사용자(${userCode}) ≠ 유저(${ftUserCode})`;
+    } else {
+      dataInput.placeholder = '먼저 위에서 사용자와 유저를 모두 선택해주세요';
+    }
     if (btnSave) btnSave.disabled = true;
   }
 }
@@ -1480,6 +1489,31 @@ function stopOrders() {
 function stopRefCodesV2() {
   if (confirm('V2 참조코드 입력을 중지하시겠습니까?\n현재까지 처리된 주문은 유지됩니다.')) {
     window.api.stopProcessing();
+  }
+}
+
+// 판매자 선택 테스트
+async function testShopSelect() {
+  const btn = document.getElementById('btnTestShopSelect');
+  btn.disabled = true;
+  btn.textContent = '테스트 중...';
+
+  try {
+    console.log('[테스트] 24개 배치 선택 시작...');
+    const result = await window.api.testShopSelect();
+    console.log('[테스트] 결과:', JSON.stringify(result, null, 2));
+
+    if (result.success) {
+      alert(`성공! ${result.checked}개 상점 체크됨`);
+    } else {
+      alert(`결과: ${result.checked || 0}개 체크됨\n${result.error || ''}`);
+    }
+  } catch (e) {
+    console.error('[테스트] 에러:', e);
+    alert(`에러: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '선택 테스트';
   }
 }
 

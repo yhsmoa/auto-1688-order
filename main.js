@@ -211,6 +211,12 @@ ipcMain.handle('open-login-browser', async () => {
   return await openLoginBrowser();
 });
 
+// 판매자 선택 테스트 IPC
+ipcMain.handle('test-shop-select', async () => {
+  const { testShopSelect } = require('./automation');
+  return await testShopSelect();
+});
+
 // 저장되지 않은 데이터 응답 처리
 ipcMain.on('unsaved-data-response', (event, hasUnsavedData) => {
   if (!hasUnsavedData) {
