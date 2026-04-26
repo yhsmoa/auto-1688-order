@@ -211,10 +211,10 @@ ipcMain.handle('open-login-browser', async () => {
   return await openLoginBrowser();
 });
 
-// 판매자 선택 테스트 IPC
-ipcMain.handle('test-shop-select', async () => {
-  const { testShopSelect } = require('./automation');
-  return await testShopSelect();
+// 문의 탭 IPC (offer_id 그룹별 채팅창 입력)
+ipcMain.handle('ask-inquiry', async (event, group) => {
+  const { askInquiry } = require('./automation');
+  return await askInquiry(group);
 });
 
 // 저장되지 않은 데이터 응답 처리

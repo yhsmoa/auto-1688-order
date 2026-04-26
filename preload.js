@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld('api', {
   inputRefCodes: (groupedCodes) => ipcRenderer.invoke('input-ref-codes', groupedCodes),
   inputRefCodesV2: (groupedCodes) => ipcRenderer.invoke('input-ref-codes-v2', groupedCodes),
   openLoginBrowser: () => ipcRenderer.invoke('open-login-browser'),
-  testShopSelect: () => ipcRenderer.invoke('test-shop-select'),
+  askInquiry: (group) => ipcRenderer.invoke('ask-inquiry', group),
   // Supabase 환경 변수
   getEnv: (key) => process.env[key],
   // 창 닫기 관련

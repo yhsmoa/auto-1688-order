@@ -2340,6 +2340,7 @@ async function inputRefCodesV2(groupedData, userCode) {
       console.log('\nSection 3: Selecting shop checkboxes (batch)...');
       checkShouldStop();
       await selectShopCheckboxes(page);
+      await trimExcessSellers(page, 24);
 
       // ── Section 4: 结算 버튼 클릭 + 주문확인 페이지 대기 ──
       // 全选 체크 후 가격 재계산 로딩 완료 대기 → 결산 버튼 활성화 확인
@@ -2821,6 +2822,39 @@ async function selectShopCheckboxes(page) {
   console.log('  ! 全选 timeout');
 }
 
+// 结算 버튼은 판매자 24개 초과 시 비활성화되므로 초과분을 해제한다.
+// 판매자 체크박스 해제(판매자 레벨)만 수행 — 상품 체크박스는 건드리지 않음.
+async function trimExcessSellers(page, max = 24) {
+  const sellerCheckedSel = '[class*="companyWrapper"] .next-checkbox-wrapper.checked';
+
+  const current = await page.locator(sellerCheckedSel).count();
+  console.log(`  판매자 체크 ${current}/${max}`);
+
+  if (current <= max) return;
+
+  const excess = current - max;
+  console.log(`  초과 ${excess}개 해제 시작`);
+
+  for (let i = 0; i < excess; i++) {
+    checkShouldStop();
+    const checked = page.locator(sellerCheckedSel);
+    const count = await checked.count();
+    if (count === 0) break;
+
+    // 마지막(가장 하단) 판매자부터 해제 → 스크롤로 추가 로드된 것 우선 제외
+    const last = checked.nth(count - 1);
+    await last.scrollIntoViewIfNeeded().catch(() => {});
+    await last.click();
+    console.log(`  - 판매자 해제 (${i + 1}/${excess})`);
+
+    // 서버 응답 + 리렌더링 대기
+    await page.waitForTimeout(3000);
+  }
+
+  const after = await page.locator(sellerCheckedSel).count();
+  console.log(`  판매자 체크 완료: ${after}/${max}`);
+}
+
 // ========================================
 // 상점 체크박스 일괄 선택 (최대 24개 상점을 동시에 클릭)
 // - Promise.all로 모든 Playwright 클릭을 동시에 실행 (CDP 병렬 전송)
@@ -2972,236 +3006,126 @@ async function selectAddress(page, userCode) {
 }
 
 // ========================================
-// 24개 판매자 배치 선택
-// 전략: 全选 API를 캡처 → cartIds를 24개 shop 분량으로 수정 → 변조된 요청 전송
-// API: mtop.1688.buycenter.MtopPurchaseAstoreService.async
-// 핵심 파라미터: eventType=selectAll, cartIds=[...], actived=true
+// 문의 탭: 판매자에게 재고 문의 채팅 입력 (전송 안함)
+// - group: { offerId, url, items: [{chinaOption, quantity}, ...] }
+// - 상품 페이지 접속 → 客服 버튼 클릭 → 새 탭 대기 → 채팅창에 중국어 메시지 입력
 // ========================================
-async function testShopSelect() {
-  console.log('\n========== 24개 배치 선택 ==========');
-  var browser = await tryConnectChrome();
-  if (!browser) return { success: false, error: 'Chrome 연결 실패' };
+async function askInquiry(group) {
+  console.log('\n========== 문의 시작 ==========');
+  console.log('  group:', JSON.stringify(group).substring(0, 200));
 
-  var contexts = browser.contexts();
-  if (contexts.length === 0) return { success: false, error: '브라우저 컨텍스트 없음' };
-
-  var page = contexts[0].pages().find(function(p) { return p.url().includes('cart.1688.com'); });
-  if (!page) {
-    page = contexts[0].pages()[0];
-    console.log('  장바구니 이동...');
-    await page.goto('https://cart.1688.com/cart.htm', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(3000);
+  const browser = await tryConnectChrome();
+  if (!browser) {
+    console.log('  Chrome 연결 실패, 디버그 모드로 실행 시도...');
+    const chromePath = findChromePath();
+    if (!chromePath) return { success: false, error: 'Chrome을 찾을 수 없습니다' };
+    await launchChromeDebug(chromePath);
+    const retry = await tryConnectChrome(3);
+    if (!retry) return { success: false, error: 'Chrome 연결 실패' };
   }
 
-  // Step 1: 스크롤로 상점 로드
-  await scrollUntilShopCount(page, 24);
-  await page.evaluate(function() { window.scrollTo(0, 0); });
-  await page.waitForTimeout(1000);
+  const connected = browser || await tryConnectChrome();
+  const context = connected.contexts()[0];
+  const page = await context.newPage();
+  await applyStealthScripts(page);
 
-  var shopSelector = '[class*="shop-container--container"]';
-  var shopCount = await page.locator(shopSelector).count();
-  console.log('  상점 ' + shopCount + '개 감지');
-
-  // Step 2: 全选 클릭하여 원본 API 요청 캡처
-  var selectAllCb = page.locator('th[class*="colCheckbox"] .next-checkbox-input');
-  if (await selectAllCb.count() === 0) return { success: false, error: '全选 체크박스 없음' };
-
-  // 이미 체크면 해제
-  if (await selectAllCb.isChecked().catch(function() { return false; })) {
-    await selectAllCb.click();
-    await page.waitForTimeout(3000);
-  }
-
-  // API 요청 캡처
-  var capturedUrl = null;
-  var capturedPostData = null;
-  var capturedHeaders = null;
-
-  var requestHandler = function(req) {
-    var url = req.url();
-    if (url.includes('astoreservice.async') && !url.includes('asyncload')) {
-      capturedUrl = url;
-      try { capturedPostData = req.postData(); } catch(e) {}
-      capturedHeaders = req.headers();
-    }
-  };
-
-  page.on('request', requestHandler);
-  console.log('  全选 클릭 → API 캡처...');
-  await selectAllCb.click();
-  await page.waitForTimeout(5000);
-  page.removeListener('request', requestHandler);
-
-  if (!capturedPostData) {
-    console.log('  X API 캡처 실패');
-    return { success: false, error: 'API 캡처 실패' };
-  }
-
-  console.log('  ✓ API 캡처 성공 (URL: ' + capturedUrl.substring(0, 80) + '...)');
-
-  // Step 3: 全选 해제
-  if (await selectAllCb.isChecked().catch(function() { return false; })) {
-    await selectAllCb.click();
-    await page.waitForTimeout(3000);
-  }
-
-  // Step 4: 캡처된 요청에서 cartIds를 24개 shop 분량으로 수정
   try {
-    var decoded = decodeURIComponent(capturedPostData.replace('data=', ''));
-    var apiObj = JSON.parse(decoded);
-    var allCartIds = apiObj.params.data.header_bar_000000.events.checkClick[0].fields.cartIds;
-    var structure = apiObj.params.hierarchy.structure;
-    var validKey = Object.keys(structure).find(function(k) { return k.startsWith('valid_container'); });
-    var allShops = structure[validKey].filter(function(s) { return s.startsWith('shop_container'); });
-
-    console.log('  전체: 상점 ' + allShops.length + '개, cartIds ' + allCartIds.length + '개');
-
-    // 처음 24개 상점만 남기기
-    var targetShopCount = Math.min(allShops.length, 24);
-    var targetShops = allShops.slice(0, targetShopCount);
-    var excessShops = allShops.slice(targetShopCount);
-
-    // 24개 상점에 속하는 cartId만 필터링
-    // hierarchy: shop_container → item_group_container → item_container 구조
-    // item_container 키에서 숫자 = offerId, cartId는 data에서 매핑
-    // 간단한 방법: excess shop에 속하는 item을 찾아서 해당 cartId 제거
-
-    // excess shop에 속하는 모든 하위 키 수집
-    var excessKeys = new Set();
-    function collectKeys(key) {
-      excessKeys.add(key);
-      if (structure[key]) {
-        structure[key].forEach(function(child) { collectKeys(child); });
-      }
-    }
-    excessShops.forEach(function(shopKey) { collectKeys(shopKey); });
-
-    // excess에 속하지 않는 cartId만 남기기 위해
-    // asyncload의 itemAsyncParams에서 sellerUserId → shop 매핑 사용
-    // 하지만 asyncload 데이터가 없으므로 hierarchy의 숫자 ID로 매핑
-    // shop_container_{sellerId} → item_group_container_{offerId}
-    var excessSellerIds = excessShops.map(function(s) { return s.replace('shop_container_', ''); });
-    console.log('  제외할 상점 ' + excessShops.length + '개: ' + excessSellerIds.join(', '));
-
-    // hierarchy structure에서 excess shop 제거
-    structure[validKey] = structure[validKey].filter(function(s) {
-      if (!s.startsWith('shop_container')) return true;
-      return targetShops.includes(s);
-    });
-
-    // excess shop의 하위 키도 structure에서 제거
-    excessKeys.forEach(function(key) {
-      delete structure[key];
-    });
-
-    // linkage.request에서도 excess 키 제거
-    if (apiObj.params.linkage && apiObj.params.linkage.request) {
-      excessKeys.forEach(function(key) {
-        delete apiObj.params.linkage.request[key];
-      });
-    }
-
-    // cartIds: excess shop에 속하는 cartId 제거
-    // item_group_container_{offerId} 안의 item들의 키에서 offerId 추출
-    var excessOfferIds = [];
-    excessShops.forEach(function(shopKey) {
-      if (structure[shopKey]) return; // 이미 삭제됨
-      // 삭제 전에 수집했어야 함 → excessKeys에서 item_group_container 찾기
-    });
-
-    // 대안: 비율 기반으로 cartIds 자르기 (정확하진 않지만 근사)
-    // 더 정확한 방법: 전체 cartIds 중 24개 shop의 것만 남기기
-    // → 각 shop의 item_group_container에서 offerId를 추출하고
-    //   해당 offerId의 cartId만 유지
-
-    // 목표 shop의 offerId 수집
-    var targetOfferIds = new Set();
-    targetShops.forEach(function(shopKey) {
-      var children = apiObj.params.hierarchy.structure[shopKey] || [];
-      children.forEach(function(child) {
-        if (child.startsWith('item_group_container_')) {
-          var offerId = child.replace('item_group_container_', '');
-          targetOfferIds.add(offerId);
-        }
-      });
-    });
-
-    console.log('  대상 offerIds: ' + targetOfferIds.size + '개');
-
-    // 하지만 cartId와 offerId 매핑을 모름...
-    // → 가장 확실한 방법: cartIds를 비율로 자르기
-    var ratio = targetShopCount / allShops.length;
-    var limitedCartIds = allCartIds.slice(0, Math.round(allCartIds.length * ratio));
-
-    // 또는: hierarchy 순서대로 cartIds가 정렬되어 있다고 가정
-    // (전체 30개 cartId, 20개 상점 중 24개... 이 경우 전부 포함)
-    // 24 >= 20 이면 전부 선택해도 됨
-    if (targetShopCount >= allShops.length) {
-      limitedCartIds = allCartIds;
-      console.log('  24 >= 전체 상점 수 → cartIds 전체 사용 (' + limitedCartIds.length + '개)');
-    } else {
-      console.log('  비율 기반 cartIds 제한: ' + limitedCartIds.length + '개 (전체 ' + allCartIds.length + '개)');
-    }
-
-    apiObj.params.data.header_bar_000000.events.checkClick[0].fields.cartIds = limitedCartIds;
-
-    // Step 5: 변조된 API 요청 전송
-    var modifiedBody = 'data=' + encodeURIComponent(JSON.stringify(apiObj));
-
-    console.log('  변조된 배치 API 전송...');
-    var apiResult = await page.evaluate(async function(args) {
-      try {
-        var resp = await fetch(args.url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: args.body,
-          credentials: 'include'
-        });
-        var text = await resp.text();
-        return { status: resp.status, bodyPreview: text.substring(0, 300) };
-      } catch(e) {
-        return { error: e.message };
-      }
-    }, { url: capturedUrl, body: modifiedBody });
-
-    console.log('  API 응답: ' + JSON.stringify(apiResult).substring(0, 300));
-
-    // Step 6: 페이지 리로드하여 서버 상태 반영
-    console.log('  페이지 리로드...');
-    await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+    // Step 1: 상품 페이지 접속
+    console.log('  URL 접속:', group.url);
+    await page.goto(group.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
 
-    // Step 7: 검증
-    var checked = await page.evaluate(function() {
-      var shops = document.querySelectorAll('[class*="shop-container--container"]');
-      var c = 0;
-      for (var i = 0; i < shops.length; i++) {
-        var w = shops[i].querySelector('[class*="companyWrapper"] .next-checkbox-wrapper');
-        if (w && w.classList.contains('checked')) c++;
+    // Step 2: 客服 버튼 찾기 + 클릭 → 새 탭 대기
+    const kefuSelector = 'a.action-item[data-trace="BAR_咨询商家"]';
+    console.log('  客服 버튼 대기...');
+    await page.waitForSelector(kefuSelector, { timeout: 15000 });
+
+    console.log('  客服 버튼 클릭 → 새 탭 대기...');
+    const [chatPage] = await Promise.all([
+      context.waitForEvent('page', { timeout: 15000 }),
+      page.locator(kefuSelector).first().click()
+    ]);
+
+    await chatPage.waitForLoadState('domcontentloaded', { timeout: 20000 });
+    console.log('  새 탭 열림:', chatPage.url());
+    await chatPage.waitForTimeout(5000); // 채팅 위젯 초기 렌더링 대기
+
+    // Step 3: 채팅 입력창 찾기 — 메인 프레임 + 모든 iframe 순회
+    // 1688 IM은 채팅 UI를 iframe으로 감싸는 경우가 있어 frameLocator 폴백 필요
+    const editSelector = 'pre.edit[contenteditable="true"]';
+    console.log('  채팅 입력창 탐색...');
+
+    let editTarget = null; // Locator (page or frame)
+    const deadline = Date.now() + 30000;
+
+    while (Date.now() < deadline) {
+      checkShouldStop();
+
+      // 메인 프레임 우선
+      if (await chatPage.locator(editSelector).count() > 0) {
+        editTarget = chatPage.locator(editSelector).first();
+        console.log('  + 메인 프레임에서 입력창 발견');
+        break;
       }
-      return c;
-    });
 
-    console.log('  ★ 결과: ' + checked + '개 상점 체크됨');
-    console.log('========== Test End ==========\n');
+      // 모든 iframe 순회
+      const frames = chatPage.frames();
+      for (const frame of frames) {
+        if (frame === chatPage.mainFrame()) continue;
+        try {
+          if (await frame.locator(editSelector).count() > 0) {
+            editTarget = frame.locator(editSelector).first();
+            console.log(`  + iframe(${frame.url().substring(0, 80)})에서 입력창 발견`);
+            break;
+          }
+        } catch (e) { /* cross-origin frame은 skip */ }
+      }
+      if (editTarget) break;
 
-    // 결과 저장
-    fs.writeFileSync(path.join(__dirname, 'api_capture.json'), JSON.stringify({
-      allCartIds: allCartIds,
-      limitedCartIds: limitedCartIds,
-      allShops: allShops.length,
-      targetShops: targetShopCount,
-      apiResult: apiResult,
-      checkedAfterReload: checked
-    }, null, 2), 'utf8');
+      await chatPage.waitForTimeout(1000);
+    }
 
-    return { success: checked >= targetShopCount, checked: checked, total: shopCount };
+    if (!editTarget) {
+      // 진단 로그: 현재 페이지 상태 + 프레임 목록
+      console.log('  X 입력창 미발견 - 진단 정보:');
+      console.log('    URL:', chatPage.url());
+      console.log('    프레임 수:', chatPage.frames().length);
+      chatPage.frames().forEach((f, i) => console.log(`    [${i}] ${f.url().substring(0, 120)}`));
+      throw new Error('채팅 입력창(pre.edit)을 메인/iframe 어디에서도 찾지 못함');
+    }
 
-  } catch(e) {
-    console.log('  X 에러: ' + e.message);
-    console.log('  스택: ' + e.stack);
+    // Step 4: 중국어 메시지 조립
+    const header = '您好，下单前咨询库存：';
+    const lines = group.items.map(it => `${it.chinaOption} - ${it.quantity}`);
+    const footer = '请告知可订购数量，谢谢！';
+    const message = [header, ...lines, '', footer].join('\n');
+
+    console.log('  메시지 입력:\n' + message);
+
+    // Step 5: contenteditable에 메시지 입력 (전송 안함)
+    await editTarget.evaluate((el, text) => {
+      el.focus();
+      el.innerText = text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, message);
+
+    await chatPage.waitForTimeout(1000);
+
+    console.log('  ★ 메시지 입력 완료 (전송 안함)');
+    console.log('========== 문의 완료 ==========\n');
+
+    return {
+      success: true,
+      offerId: group.offerId,
+      itemCount: group.items.length,
+      message: message
+    };
+
+  } catch (e) {
+    console.log('  X 에러:', e.message);
     return { success: false, error: e.message };
   }
 }
 
-module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, testShopSelect };
+module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry };

@@ -15,6 +15,8 @@
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       background: #f5f5f5;
       padding: 20px;
+      padding-left: 72px;   /* 좌측 사이드바(52px) + 여백 */
+      padding-right: 150px; /* 우측 액션 패널(130px) + 여백 */
     }
 
     .container {
@@ -150,8 +152,16 @@
       font-weight: bold;
     }
 
-    .btn-stop:hover {
+    .btn-stop:hover:not(:disabled) {
       background: #c9302c;
+    }
+
+    /* 중단 버튼은 평상시(작업 진행 중이 아닐 때) disabled — 회색 표시 */
+    .btn-stop:disabled {
+      background: #adb5bd;
+      color: rgba(255, 255, 255, 0.7);
+      cursor: not-allowed;
+      font-weight: normal;
     }
 
     .btn-clear {
@@ -188,20 +198,58 @@
       background: #5a6268;
     }
 
-    /* 버튼 단계 스타일 */
-    .button-steps {
+    /* ─── 우측 고정 액션 패널 ─── */
+    .right-panel {
+      position: fixed;
+      right: 0;
+      top: 0;
+      width: 130px;
+      height: 100vh;
+      background: #1e2430;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 4px;
-      margin-top: 15px;
-      flex-wrap: wrap;
+      padding: 20px 10px;
+      z-index: 100;
+      box-shadow: -2px 0 6px rgba(0, 0, 0, 0.25);
+      overflow-y: auto;
     }
 
-    .step-arrow {
-      color: #999;
-      font-size: 14px;
-      padding: 0 2px;
+    /* 탭별 버튼 섹션 */
+    .rp-section {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 6px;
+      width: 100%;
+    }
+
+    /* 버튼 그룹 (연관 버튼 묶음) */
+    .rp-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    /* 그룹 간 구분 화살표 */
+    .rp-divider {
+      text-align: center;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.3);
+      margin: 2px 0;
+      line-height: 1;
+      user-select: none;
+    }
+
+    /* 우측 패널 내 버튼 — 전체 너비, 다크 배경에 맞게 조정 */
+    .right-panel .btn-step,
+    .right-panel .btn-stop {
+      width: 100%;
+      min-width: unset;
+      font-size: 12px;
+      padding: 8px 6px;
+      border-radius: 4px;
     }
 
     .btn-step {
@@ -1176,75 +1224,255 @@
     .match-cell:hover {
       background: #f0f0f0;
     }
+
+    /* ───── 좌측 사이드바 + 탭 레이아웃 ───── */
+    .main-layout {
+      display: block;
+    }
+
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 52px;
+      height: 100vh;
+      background: white;
+      box-shadow: 2px 0 6px rgba(0,0,0,0.1);
+      padding: 20px 0;
+      z-index: 100;
+      overflow: hidden;
+      transition: width 0.2s ease;
+    }
+
+    .sidebar:hover {
+      width: 150px;
+    }
+
+    .sidebar-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #555;
+      border-left: 3px solid transparent;
+      white-space: nowrap;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .sidebar-item .s-icon {
+      font-size: 18px;
+      flex-shrink: 0;
+      width: 22px;
+      text-align: center;
+    }
+
+    .sidebar-item .s-label {
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .sidebar:hover .sidebar-item .s-label {
+      opacity: 1;
+    }
+
+    .sidebar-item:hover {
+      background: #f5f5f5;
+    }
+
+    .sidebar-item.active {
+      background: #e8f0fe;
+      color: #1a73e8;
+      border-left-color: #1a73e8;
+      font-weight: 600;
+    }
+
+    .tab-content-wrapper {
+      display: block;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    /* 문의 탭 테이블 */
+    .inquiry-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .inquiry-table th,
+    .inquiry-table td {
+      border: 1px solid #e0e0e0;
+      padding: 8px 10px;
+      text-align: left;
+    }
+
+    .inquiry-table th {
+      background: #f8f9fa;
+      font-weight: 600;
+      color: #555;
+    }
+
+    .inquiry-table tbody tr:hover {
+      background: #fafafa;
+    }
   </style>
 </head>
 <body>
+  <!-- ─── 우측 고정 액션 패널 ─── -->
+  <div class="right-panel" id="rightPanel">
+
+    <!-- 주문 탭 버튼 그룹 -->
+    <div class="rp-section" id="rpOrder">
+
+      <!-- 주문 진행 -->
+      <!-- ('정리' 버튼은 입력 섹션 우측 상단으로 이동 → '추가' 버튼) -->
+      <div class="rp-group">
+        <button class="btn-step" id="btnSkip" onclick="skipOrders()" disabled>주문 생략</button>
+        <button class="btn-step" id="btnStart" onclick="startOrders()" disabled>주문 진행</button>
+        <button class="btn-stop" id="btnStop" onclick="stopOrders()" disabled>중단</button>
+      </div>
+      <div class="rp-divider">⬇</div>
+
+      <!-- 그룹 3: 검수 -->
+      <div class="rp-group">
+        <button class="btn-step" id="btnReview" onclick="startReview()" disabled>검수</button>
+      </div>
+      <div class="rp-divider">⬇</div>
+
+      <!-- 그룹 4: 참조코드 -->
+      <div class="rp-group">
+        <button class="btn-step" id="btnRefCode" onclick="inputRefCodes()" disabled>참조코드 입력</button>
+        <button class="btn-step" id="btnRefCodeV2" onclick="inputRefCodesV2()">V2 참조코드</button>
+        <button class="btn-stop" id="btnStopV2" onclick="stopRefCodesV2()" disabled>V2 중단</button>
+      </div>
+      <div class="rp-divider">⬇</div>
+
+      <!-- 그룹 5: 주문번호 등록 -->
+      <div class="rp-group">
+        <button class="btn-step" id="btnOrderNumber" onclick="registerOrderNumbers()">주문번호 등록</button>
+        <input type="file" id="orderNumberFile" accept=".xlsx,.xls" style="display:none;" onchange="handleOrderNumberFile(event)">
+      </div>
+      <div class="rp-divider">⬇</div>
+
+      <!-- 그룹 6: 저장 -->
+      <div class="rp-group">
+        <button class="btn-step" id="btnSaveSupabase" onclick="saveToSupabase()">저장</button>
+        <button class="btn-step" id="btnSaveV2" onclick="saveToSupabaseV2()">V2 저장</button>
+      </div>
+      <div class="rp-divider">⬇</div>
+
+      <!-- 그룹 7: 차감 -->
+      <div class="rp-group">
+        <button class="btn-step btn-step-deduct" id="btnDeduct" onclick="deductStock()">차감</button>
+        <button class="btn-step btn-step-deduct" id="btnDeductV2" onclick="deductStockV2()">V2 차감</button>
+      </div>
+      <div class="rp-divider">⬇</div>
+
+      <!-- 그룹 8: 내보내기 -->
+      <div class="rp-group">
+        <button class="btn-step btn-step-success" id="btnExportSuccess" onclick="exportSuccessOrders()">성공</button>
+        <button class="btn-step btn-step-fail" id="btnExportFail" onclick="exportFailedOrders()">실패</button>
+        <button class="btn-step btn-step-fail" id="btnExportFailV2" onclick="exportFailedOrdersV2()">실패V2</button>
+      </div>
+
+    </div><!-- /rpOrder -->
+
+    <!-- 문의 탭 버튼 그룹 -->
+    <div class="rp-section" id="rpInquiry" style="display:none;">
+
+      <!-- 그룹 1: 정리 -->
+      <div class="rp-group">
+        <button class="btn-step" id="btnInquirySave" onclick="parseInquiryData()" disabled>정리</button>
+      </div>
+      <div class="rp-divider">⬇</div>
+
+      <!-- 그룹 2: 문의 -->
+      <div class="rp-group">
+        <button class="btn-step" id="btnInquiryAsk" onclick="startInquiry()" disabled>문의</button>
+      </div>
+      <div class="rp-divider">⬇</div>
+
+      <!-- 그룹 3: 확인 (추후 구현) -->
+      <div class="rp-group">
+        <button class="btn-step" id="btnInquiryConfirm" disabled>확인</button>
+      </div>
+
+    </div><!-- /rpInquiry -->
+
+  </div><!-- /right-panel -->
+
+  <!-- ─── 좌측 고정 사이드바 ─── -->
+  <div class="sidebar">
+    <div class="sidebar-item active" id="sideOrder" onclick="switchTab('order')">
+      <span class="s-icon">🛍️</span>
+      <span class="s-label">주문</span>
+    </div>
+    <div class="sidebar-item" id="sideInquiry" onclick="switchTab('inquiry')">
+      <span class="s-icon">💬</span>
+      <span class="s-label">문의</span>
+    </div>
+  </div>
+
   <div class="container">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
       <h1 style="margin: 0;">1688 자동 주문 시스템</h1>
-      <div style="display: flex; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <!-- 주문 탭 전용: 패스워드 게이트 + 사용자/유저 드롭박스 (문의 탭에서는 숨김) -->
+        <div id="userControls" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <!-- 패스워드 입력폼 -->
+          <label style="font-size: 13px; color: #555;">패스워드:</label>
+          <input type="password" id="orderPwInput"
+                 style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; width: 130px;"
+                 placeholder="패스워드 입력"
+                 oninput="onPasswordInput()" autocomplete="off">
+
+          <!-- users_api 드롭박스 (coupang_name + user_code) — 패스워드 통과 전 비활성 -->
+          <label style="font-size: 13px; color: #555;">사용자:</label>
+          <select id="userSelect" disabled
+                  style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-width: 200px;">
+            <option value="">-- 선택하세요 --</option>
+          </select>
+
+          <!-- ft_users 드롭박스 (full_name + user_code) — 패스워드 통과 전 비활성 -->
+          <label style="font-size: 13px; color: #555;">유저:</label>
+          <select id="ftUserSelect" disabled
+                  style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-width: 200px;">
+            <option value="">-- 선택하세요 --</option>
+          </select>
+        </div>
+
         <button class="btn-login-setup" onclick="resetBrowserProfile()">초기화 설정</button>
         <button class="btn-login-setup" onclick="openLoginSetup()">로그인 설정</button>
       </div>
     </div>
 
+    <div class="main-layout">
+      <!-- 탭 콘텐츠 -->
+      <div class="tab-content-wrapper">
+
+      <!-- ─── 주문 탭 ─── -->
+      <div class="tab-content active" id="tab-order">
+
     <div class="input-section">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
         <h3 style="margin: 0;">구글 시트 데이터 입력</h3>
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <!-- users_api 드롭박스 (coupang_name + user_code) -->
-          <label style="font-size: 13px; color: #555;">사용자:</label>
-          <select id="userSelect" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-width: 200px;">
-            <option value="">-- 선택하세요 --</option>
-          </select>
-          <!-- ft_users 드롭박스 (full_name + user_code) -->
-          <label style="font-size: 13px; color: #555;">유저:</label>
-          <select id="ftUserSelect" style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-width: 200px;">
-            <option value="">-- 선택하세요 --</option>
-          </select>
-        </div>
       </div>
       <p>구글 시트에서 전체 행을 복사해서 붙여넣기 하세요 (A~L열 모두 포함)</p>
-      <p style="font-size: 11px; color: #666;">필요한 열: B(주문번호), E(수량), G(색상), H(사이즈), L(URL)</p>
+      <!-- 필요한 열 안내 + '추가' 버튼 (입력폼 우측 상단) -->
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+        <p style="font-size: 11px; color: #666; margin: 0;">필요한 열: B(주문번호), E(수량), G(색상), H(사이즈), L(URL)</p>
+        <button class="btn-step" id="btnSave" onclick="parseData()" disabled>추가</button>
+      </div>
       <textarea id="dataInput" placeholder="먼저 위에서 사용자를 선택해주세요" disabled style="opacity: 0.5;"></textarea>
 
-      <div class="button-steps">
-        <button class="btn-step" id="btnSave" onclick="parseData()" disabled>정리</button>
-        <span class="step-arrow">➜</span>
-        <div class="step-group">
-          <button class="btn-step" id="btnSkip" onclick="skipOrders()" disabled>주문 생략</button>
-          <button class="btn-step" id="btnStart" onclick="startOrders()" disabled>주문 진행</button>
-          <button class="btn-stop" id="btnStop" onclick="stopOrders()" style="display: none;">중단</button>
-        </div>
-        <span class="step-arrow">➜</span>
-        <button class="btn-step" id="btnReview" onclick="startReview()" disabled>검수</button>
-        <span class="step-arrow">➜</span>
-        <div class="step-group" style="flex-direction: column; gap: 4px;">
-          <button class="btn-step" id="btnRefCode" onclick="inputRefCodes()" disabled>참조코드 입력</button>
-          <button class="btn-step" id="btnRefCodeV2" onclick="inputRefCodesV2()">V2 참조코드</button>
-          <button class="btn-stop" id="btnStopV2" onclick="stopRefCodesV2()" style="display: none;">V2 중단</button>
-          <button class="btn-step" id="btnTestShopSelect" onclick="testShopSelect()" style="font-size: 11px; padding: 2px 8px; min-width: auto;">선택 테스트</button>
-        </div>
-        <span class="step-arrow">➜</span>
-        <button class="btn-step" id="btnOrderNumber" onclick="registerOrderNumbers()">주문번호 등록</button>
-        <input type="file" id="orderNumberFile" accept=".xlsx,.xls" style="display: none;" onchange="handleOrderNumberFile(event)">
-        <span class="step-arrow">➜</span>
-        <div class="step-group" style="flex-direction: column; gap: 4px;">
-          <button class="btn-step" id="btnSaveSupabase" onclick="saveToSupabase()">저장</button>
-          <button class="btn-step" id="btnSaveV2" onclick="saveToSupabaseV2()">V2 저장</button>
-        </div>
-        <span class="step-arrow">➜</span>
-        <div class="step-group" style="flex-direction: column; gap: 4px;">
-          <button class="btn-step btn-step-deduct" id="btnDeduct" onclick="deductStock()">차감</button>
-          <button class="btn-step btn-step-deduct" id="btnDeductV2" onclick="deductStockV2()">V2 차감</button>
-        </div>
-        <span class="step-arrow">➜</span>
-        <div class="step-group">
-          <button class="btn-step btn-step-success" id="btnExportSuccess" onclick="exportSuccessOrders()">성공</button>
-          <button class="btn-step btn-step-fail" id="btnExportFail" onclick="exportFailedOrders()">실패</button>
-          <button class="btn-step btn-step-fail" id="btnExportFailV2" onclick="exportFailedOrdersV2()">실패V2</button>
-        </div>
-      </div>
 
       <!-- 데이터 미리보기 -->
       <div class="data-preview" id="dataPreview" style="display: none;">
@@ -1298,6 +1526,34 @@
     </div>
     <!-- 테이블 하단 여백: 검색 시 결과가 위쪽에 있어도 스크롤 위치 유지 -->
     <div style="height: 300px;"></div>
+
+      </div><!-- /tab-order -->
+
+      <!-- ─── 문의 탭 ─── -->
+      <div class="tab-content" id="tab-inquiry">
+        <div class="input-section">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h3 style="margin: 0;">구글 시트 데이터 입력 (문의)</h3>
+          </div>
+          <p>구글 시트에서 전체 행을 복사해서 붙여넣기 하세요 (A~G열)</p>
+          <p style="font-size: 11px; color: #666;">필요한 열: A(date), B(상품정보), C(중국어 옵션명), D(수량), E(링크), F(문의내용), G(답변내용)</p>
+          <textarea id="inquiryDataInput" placeholder="먼저 위에서 사용자와 유저를 모두 선택해주세요" disabled style="opacity: 0.5;"></textarea>
+
+        </div>
+
+        <div class="order-list">
+          <h3>
+            <span>문의 목록 <span id="inquiryCount"></span></span>
+          </h3>
+          <div id="inquiryListContent">
+            <div class="empty-message">데이터를 입력하고 정리 버튼을 클릭하세요</div>
+          </div>
+        </div>
+        <div style="height: 300px;"></div>
+      </div><!-- /tab-inquiry -->
+
+      </div><!-- /tab-content-wrapper -->
+    </div><!-- /main-layout -->
   </div>
 
   <!-- 검색창 -->

@@ -5,6 +5,171 @@ let isProcessing = false;  // 주문 진행 중 플래그
 let unmatchedExcelData = [];  // 매칭되지 않은 엑셀 데이터
 let isDataSaved = true;  // 데이터 저장 여부 플래그
 let pendingAction = null;  // 대기 중인 액션 ('refresh' 또는 'close')
+let inquiryOrders = [];  // 문의 탭 데이터
+let currentTab = 'order';  // 현재 활성 탭 ('order' | 'inquiry')
+
+// ════════════════════════════════════════════════════════════
+// 주문 탭 패스워드 게이트
+// - 사용자/유저 드롭박스를 활성화하기 위해 입력해야 하는 패스워드
+// - 일치 시 isOrderUnlocked = true → 드롭박스 활성화
+// ════════════════════════════════════════════════════════════
+const ORDER_PASSWORD = '16665562643';
+let isOrderUnlocked = false;
+
+// 패스워드 입력 핸들러
+function onPasswordInput() {
+  const input = document.getElementById('orderPwInput');
+  if (!input) return;
+  const matched = input.value === ORDER_PASSWORD;
+
+  if (matched && !isOrderUnlocked) {
+    isOrderUnlocked = true;
+    input.style.borderColor = '#28a745';
+  } else if (!matched && isOrderUnlocked) {
+    isOrderUnlocked = false;
+    input.style.borderColor = '#ddd';
+  }
+
+  applyOrderUnlockState();
+}
+
+// 패스워드 잠금 상태에 따라 사용자/유저 드롭박스 활성화/비활성화
+function applyOrderUnlockState() {
+  const userSelect = document.getElementById('userSelect');
+  const ftUserSelect = document.getElementById('ftUserSelect');
+
+  if (userSelect) userSelect.disabled = !isOrderUnlocked;
+  if (ftUserSelect) ftUserSelect.disabled = !isOrderUnlocked;
+
+  // 잠금 상태로 돌아가면 선택값 초기화 → 데이터 입력도 비활성화
+  if (!isOrderUnlocked) {
+    if (userSelect) userSelect.value = '';
+    if (ftUserSelect) ftUserSelect.value = '';
+  }
+
+  updateDataInputState();
+  applyUserCodeButtonVisibility();
+}
+
+// ════════════════════════════════════════════════════════════
+// user_code 그룹별 우측 패널 버튼 가시성
+// - ft_users.user_code prefix(알파벳 앞부분)로 그룹 결정
+// - HI/MB → V2 풀 워크플로우
+// - BZ    → V1 풀 워크플로우
+// - BO    → 혼합 (저장 V2, 차감 V1, 실패만)
+// ════════════════════════════════════════════════════════════
+// 중단 버튼(btnStop, btnStopV2)은 작업 진행 상태에 따라 자체 제어되므로
+// user_code 그룹 가시성 토글 대상에서 분리
+const USER_CODE_BUTTON_VISIBILITY = {
+  HI: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  MB: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  BZ: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnDeduct', 'btnExportSuccess', 'btnExportFail'],
+  BO: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFail'],
+};
+
+// 우측 패널의 모든 버튼 ID (가시성 계산용)
+// - 'btnSave'(추가): 입력 섹션에 위치
+// - 'btnStop'/'btnStopV2': 작업 진행 상태로 자체 제어 (disabled 토글)
+const ALL_RP_ORDER_BUTTONS = [
+  'btnSkip', 'btnStart', 'btnReview',
+  'btnRefCode', 'btnRefCodeV2',
+  'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2',
+  'btnDeduct', 'btnDeductV2',
+  'btnExportSuccess', 'btnExportFail', 'btnExportFailV2'
+];
+
+// user_code → prefix 추출 (예: "HI-001" → "HI", "BZ123" → "BZ")
+function getUserCodePrefix(userCode) {
+  if (!userCode) return null;
+  const m = userCode.match(/^[A-Za-z]+/);
+  return m ? m[0].toUpperCase() : null;
+}
+
+// user_code 그룹에 따라 버튼 표시/숨김
+function applyUserCodeButtonVisibility() {
+  const ftUserSelect = document.getElementById('ftUserSelect');
+  const userCode = ftUserSelect?.selectedOptions[0]?.dataset.userCode || '';
+  const prefix = getUserCodePrefix(userCode);
+  const allowList = USER_CODE_BUTTON_VISIBILITY[prefix] || null;
+
+  ALL_RP_ORDER_BUTTONS.forEach(id => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    if (!allowList) {
+      // user_code 미선택/매핑 없음 → 모든 버튼 숨김
+      btn.style.display = 'none';
+    } else {
+      btn.style.display = allowList.includes(id) ? '' : 'none';
+    }
+  });
+
+  pruneEmptyRpGroups();
+}
+
+// 모든 버튼이 숨겨진 그룹/디바이더는 숨김 (시각적 빈 공간 제거)
+function pruneEmptyRpGroups() {
+  const rpOrder = document.getElementById('rpOrder');
+  if (!rpOrder) return;
+
+  const children = Array.from(rpOrder.children);
+
+  // 1차: 그룹 단위로 빈 그룹 식별 후 숨김
+  children.forEach(el => {
+    if (!el.classList.contains('rp-group')) return;
+    const buttons = el.querySelectorAll('button');
+    if (buttons.length === 0) return;
+    const allHidden = Array.from(buttons).every(b => b.style.display === 'none');
+    el.style.display = allHidden ? 'none' : '';
+  });
+
+  // 2차: 디바이더 — 인접한 보이는 그룹이 양쪽에 모두 있을 때만 표시
+  let prevVisibleGroup = null;
+  let pendingDivider = null;
+  children.forEach(el => {
+    if (el.classList.contains('rp-group')) {
+      const isVisible = el.style.display !== 'none';
+      if (isVisible) {
+        if (pendingDivider && prevVisibleGroup) {
+          pendingDivider.style.display = '';
+        }
+        prevVisibleGroup = el;
+        pendingDivider = null;
+      }
+    } else if (el.classList.contains('rp-divider')) {
+      el.style.display = 'none';  // 일단 숨겼다가 다음 보이는 그룹 만나면 켬
+      pendingDivider = el;
+    }
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// 탭 전환 — 좌측 사이드바 + 콘텐츠 + 우측 액션 패널 + 헤더 컨트롤 동기화
+// ════════════════════════════════════════════════════════════
+function switchTab(tabName) {
+  currentTab = tabName;
+
+  // 콘텐츠 탭 전환
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active'));
+
+  if (tabName === 'order') {
+    document.getElementById('tab-order').classList.add('active');
+    document.getElementById('sideOrder').classList.add('active');
+  } else if (tabName === 'inquiry') {
+    document.getElementById('tab-inquiry').classList.add('active');
+    document.getElementById('sideInquiry').classList.add('active');
+  }
+
+  // 우측 액션 패널 섹션 전환
+  document.getElementById('rpOrder').style.display = tabName === 'order' ? 'flex' : 'none';
+  document.getElementById('rpInquiry').style.display = tabName === 'inquiry' ? 'flex' : 'none';
+
+  // 상단 헤더의 패스워드 + 사용자/유저 드롭박스 — 주문 탭에서만 노출
+  const userControls = document.getElementById('userControls');
+  if (userControls) userControls.style.display = tabName === 'order' ? 'flex' : 'none';
+
+  updateDataInputState();
+}
 
 // 버튼 단계 상태 관리
 let stepStatus = {
@@ -19,89 +184,110 @@ let stepStatus = {
   fail: false        // 실패 내보내기
 };
 
-// 버튼 상태 업데이트
+// 버튼 단계 색상 갱신 — V1/V2 짝꿍 버튼을 같은 단계로 처리
 function updateButtonSteps() {
-  const btnSave = document.getElementById('btnSave');
-  const btnSkip = document.getElementById('btnSkip');
-  const btnStart = document.getElementById('btnStart');
-  const btnReview = document.getElementById('btnReview');
-  const btnRefCode = document.getElementById('btnRefCode');
-  const btnOrderNumber = document.getElementById('btnOrderNumber');
+  // V1 + V2 짝꿍 버튼 참조
+  const btnSave         = document.getElementById('btnSave');
+  const btnSkip         = document.getElementById('btnSkip');
+  const btnStart        = document.getElementById('btnStart');
+  const btnReview       = document.getElementById('btnReview');
+  const btnRefCode      = document.getElementById('btnRefCode');
+  const btnRefCodeV2    = document.getElementById('btnRefCodeV2');
+  const btnOrderNumber  = document.getElementById('btnOrderNumber');
   const btnSaveSupabase = document.getElementById('btnSaveSupabase');
-  const btnDeduct = document.getElementById('btnDeduct');
-  const btnExportSuccess = document.getElementById('btnExportSuccess');
-  const btnExportFail = document.getElementById('btnExportFail');
+  const btnSaveV2       = document.getElementById('btnSaveV2');
+  const btnDeduct       = document.getElementById('btnDeduct');
+  const btnDeductV2     = document.getElementById('btnDeductV2');
+  const btnExportSuccess  = document.getElementById('btnExportSuccess');
+  const btnExportFail     = document.getElementById('btnExportFail');
+  const btnExportFailV2   = document.getElementById('btnExportFailV2');
 
-  // 모든 버튼에서 상태 클래스 제거
-  const allBtns = [btnSave, btnSkip, btnStart, btnReview, btnRefCode, btnOrderNumber, btnSaveSupabase, btnDeduct, btnExportSuccess, btnExportFail];
-  allBtns.forEach(btn => {
-    if (btn) {
-      btn.classList.remove('completed', 'next', 'active');
-    }
-  });
+  // 단계 클래스 초기화 — V2 짝꿍 포함
+  const allBtns = [
+    btnSave, btnSkip, btnStart, btnReview,
+    btnRefCode, btnRefCodeV2,
+    btnOrderNumber,
+    btnSaveSupabase, btnSaveV2,
+    btnDeduct, btnDeductV2,
+    btnExportSuccess, btnExportFail, btnExportFailV2
+  ];
+  allBtns.forEach(btn => btn?.classList.remove('completed', 'next', 'active'));
 
-  // 단계별 상태 적용
+  // 정리(parse) 단계
   if (stepStatus.parse) {
-    btnSave.classList.add('completed');
-    // 다음 단계 표시
+    btnSave?.classList.add('completed');
     if (!stepStatus.order) {
-      btnSkip.classList.add('next');
-      btnStart.classList.add('next');
+      btnSkip?.classList.add('next');
+      btnStart?.classList.add('next');
     }
   } else {
-    btnSave.classList.add('next');
+    btnSave?.classList.add('next');
   }
 
+  // 주문(order) 단계
   if (stepStatus.order) {
-    btnSkip.classList.add('completed');
-    btnStart.classList.add('completed');
+    btnSkip?.classList.add('completed');
+    btnStart?.classList.add('completed');
     if (!stepStatus.review) {
-      btnReview.classList.add('next');
+      btnReview?.classList.add('next');
     }
   }
 
+  // 검수(review) 단계
   if (stepStatus.review) {
-    btnReview.classList.add('completed');
+    btnReview?.classList.add('completed');
     if (!stepStatus.refCode) {
-      btnRefCode.classList.add('next');
+      btnRefCode?.classList.add('next');
+      btnRefCodeV2?.classList.add('next');
     }
   }
 
+  // 참조코드(refCode) 단계 — V1/V2 동시 처리
   if (stepStatus.refCode) {
-    btnRefCode.classList.add('completed');
+    btnRefCode?.classList.add('completed');
+    btnRefCodeV2?.classList.add('completed');
     if (!stepStatus.orderNumber) {
-      btnOrderNumber.classList.add('next');
+      btnOrderNumber?.classList.add('next');
     }
   }
 
+  // 주문번호 등록(orderNumber) 단계
   if (stepStatus.orderNumber) {
-    btnOrderNumber.classList.add('completed');
+    btnOrderNumber?.classList.add('completed');
     if (!stepStatus.save) {
-      btnSaveSupabase.classList.add('next');
+      btnSaveSupabase?.classList.add('next');
+      btnSaveV2?.classList.add('next');
     }
   }
 
+  // 저장(save) 단계 — V1/V2 동시 처리
   if (stepStatus.save) {
-    btnSaveSupabase.classList.add('completed');
+    btnSaveSupabase?.classList.add('completed');
+    btnSaveV2?.classList.add('completed');
     if (!stepStatus.deduct) {
-      btnDeduct.classList.add('next');
+      btnDeduct?.classList.add('next');
+      btnDeductV2?.classList.add('next');
     }
   }
 
+  // 차감(deduct) 단계 — V1/V2 동시 처리
   if (stepStatus.deduct) {
-    btnDeduct.classList.add('completed');
+    btnDeduct?.classList.add('completed');
+    btnDeductV2?.classList.add('completed');
     if (!stepStatus.success && !stepStatus.fail) {
-      btnExportSuccess.classList.add('next');
-      btnExportFail.classList.add('next');
+      btnExportSuccess?.classList.add('next');
+      btnExportFail?.classList.add('next');
+      btnExportFailV2?.classList.add('next');
     }
   }
 
+  // 내보내기(success/fail) 단계
   if (stepStatus.success) {
-    btnExportSuccess.classList.add('completed');
+    btnExportSuccess?.classList.add('completed');
   }
-
   if (stepStatus.fail) {
-    btnExportFail.classList.add('completed');
+    btnExportFail?.classList.add('completed');
+    btnExportFailV2?.classList.add('completed');
   }
 }
 
@@ -481,6 +667,11 @@ let ftUsersData = [];     // ft_users 테이블 데이터
 
 // Supabase 클라이언트 초기화 (페이지 로드 후)
 window.addEventListener('DOMContentLoaded', () => {
+  // 초기 상태: user_code 미선택 → 우측 패널 모든 버튼 숨김
+  applyUserCodeButtonVisibility();
+  // 초기 상태: 패스워드 잠김 → 사용자/유저 드롭박스 비활성
+  applyOrderUnlockState();
+
   if (window.api && window.supabase) {
     const SUPABASE_URL = window.api.getEnv('SUPABASE_URL');
     const SUPABASE_SERVICE_ROLE_KEY = window.api.getEnv('SUPABASE_SERVICE_ROLE_KEY');
@@ -582,10 +773,12 @@ function populateFtUserSelect() {
 
   // 초기 상태 업데이트
   updateDataInputState();
+  applyUserCodeButtonVisibility();
 
-  // 유저 선택 시 데이터 입력 활성화
+  // 유저 선택 시 데이터 입력 활성화 + user_code 그룹별 버튼 가시성 갱신
   select.addEventListener('change', () => {
     updateDataInputState();
+    applyUserCodeButtonVisibility();
   });
 }
 
@@ -618,38 +811,54 @@ function populateUserSelect() {
   });
 }
 
-// ========== 드롭박스 선택 상태에 따른 입력 활성화/비활성화 ==========
+// ════════════════════════════════════════════════════════════
+// 드롭박스/패스워드 선택 상태에 따른 입력 활성화/비활성화
+// - 주문 탭: 패스워드 통과 + 사용자/유저 모두 선택 + user_code 일치 → 활성화
+// - 문의 탭: 사용자/유저 드롭박스와 무관하게 항상 활성화 (독립 동작)
+// ════════════════════════════════════════════════════════════
 function updateDataInputState() {
+  // ── 주문 탭 입력 상태 ──
   const userSelect = document.getElementById('userSelect');
   const ftUserSelect = document.getElementById('ftUserSelect');
   const dataInput = document.getElementById('dataInput');
   const btnSave = document.getElementById('btnSave');
 
-  if (!dataInput) return;
+  if (dataInput) {
+    const isUserSelected = userSelect && userSelect.value !== '';
+    const isFtUserSelected = ftUserSelect && ftUserSelect.value !== '';
+    const bothSelected = isUserSelected && isFtUserSelected;
 
-  const isUserSelected = userSelect && userSelect.value !== '';
-  const isFtUserSelected = ftUserSelect && ftUserSelect.value !== '';
-  const bothSelected = isUserSelected && isFtUserSelected;
+    const userCode = userSelect?.selectedOptions[0]?.dataset.userCode || '';
+    const ftUserCode = ftUserSelect?.selectedOptions[0]?.dataset.userCode || '';
+    const codesMatch = userCode && ftUserCode && userCode === ftUserCode;
 
-  // 두 드롭박스의 user_code 비교
-  const userCode = userSelect?.selectedOptions[0]?.dataset.userCode || '';
-  const ftUserCode = ftUserSelect?.selectedOptions[0]?.dataset.userCode || '';
-  const codesMatch = userCode && ftUserCode && userCode === ftUserCode;
-
-  if (bothSelected && codesMatch) {
-    dataInput.disabled = false;
-    dataInput.style.opacity = '1';
-    dataInput.placeholder = '구글 시트에서 행 전체를 선택하고 복사(Ctrl+C) 후 여기에 붙여넣기(Ctrl+V)';
-    if (btnSave) btnSave.disabled = false;
-  } else {
-    dataInput.disabled = true;
-    dataInput.style.opacity = '0.5';
-    if (bothSelected && !codesMatch) {
-      dataInput.placeholder = `user_code 불일치: 사용자(${userCode}) ≠ 유저(${ftUserCode})`;
+    if (isOrderUnlocked && bothSelected && codesMatch) {
+      dataInput.disabled = false;
+      dataInput.style.opacity = '1';
+      dataInput.placeholder = '구글 시트에서 행 전체를 선택하고 복사(Ctrl+C) 후 여기에 붙여넣기(Ctrl+V)';
+      if (btnSave) btnSave.disabled = false;
     } else {
-      dataInput.placeholder = '먼저 위에서 사용자와 유저를 모두 선택해주세요';
+      dataInput.disabled = true;
+      dataInput.style.opacity = '0.5';
+      if (!isOrderUnlocked) {
+        dataInput.placeholder = '패스워드를 먼저 입력해주세요';
+      } else if (bothSelected && !codesMatch) {
+        dataInput.placeholder = `user_code 불일치: 사용자(${userCode}) ≠ 유저(${ftUserCode})`;
+      } else {
+        dataInput.placeholder = '사용자와 유저를 모두 선택해주세요';
+      }
+      if (btnSave) btnSave.disabled = true;
     }
-    if (btnSave) btnSave.disabled = true;
+  }
+
+  // ── 문의 탭 입력 상태 (사용자/유저 드롭박스와 독립) ──
+  const inquiryDataInput = document.getElementById('inquiryDataInput');
+  const btnInquirySave = document.getElementById('btnInquirySave');
+  if (inquiryDataInput) {
+    inquiryDataInput.disabled = false;
+    inquiryDataInput.style.opacity = '1';
+    inquiryDataInput.placeholder = '구글 시트에서 행 전체를 선택하고 복사(Ctrl+C) 후 여기에 붙여넣기(Ctrl+V)';
+    if (btnInquirySave) btnInquirySave.disabled = false;
   }
 }
 
@@ -773,7 +982,8 @@ function processUrl(rawUrl) {
 // 데이터 파싱
 function parseData() {
   console.log('parseData 함수 호출됨');
-  const input = document.getElementById('dataInput').value.trim();
+  const dataInput = document.getElementById('dataInput');
+  const input = dataInput.value.trim();
 
   if (!input) {
     alert('데이터를 입력해주세요.');
@@ -781,7 +991,9 @@ function parseData() {
   }
 
   const lines = input.split('\n').filter(line => line.trim());
-  orders = [];
+
+  // 누적 모드: 기존 orders는 유지하고 새 데이터를 push
+  const newOrders = [];
 
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx];
@@ -791,7 +1003,7 @@ function parseData() {
     // 최소 12개 컬럼 필요 (A~L까지)
     if (parts.length < 12) {
       // 컬럼 부족 → 무효 행으로 추가 (테이블·미리보기에 빨간색 표시)
-      orders.push({
+      newOrders.push({
         orderNo: '주문 데이터를 확인해주세요',
         quantity: 0, color: '', size: '', url: '',
         orderCode: '', status: 'pending', errorReason: '',
@@ -816,7 +1028,7 @@ function parseData() {
       if (!color)   missing.push('색상(G)');
       if (!size)    missing.push('사이즈(H)');
       if (!url)     missing.push('URL(L)');
-      orders.push({
+      newOrders.push({
         orderNo: '주문 데이터를 확인해주세요',
         quantity, color, size, url,
         orderCode: parts[18] ? parts[18].trim() : '',
@@ -839,7 +1051,7 @@ function parseData() {
     }
 
     // 정상 행
-    orders.push({
+    newOrders.push({
       // 화면 표시용 (기존 필드 유지)
       orderNo,          // B열
       quantity,         // E열
@@ -888,10 +1100,15 @@ function parseData() {
     });
   }
 
-  if (orders.length === 0) {
+  // 파싱 실패 (이번 입력에서 단 1행도 못 만든 경우)
+  if (newOrders.length === 0) {
     alert('유효한 데이터가 없습니다. 형식을 확인해주세요.');
     return;
   }
+
+  // ── 누적 추가: 기존 orders 보존, 새 행만 push ──
+  const addedCount = newOrders.length;
+  orders.push(...newOrders);
 
   // 데이터가 파싱되면 저장되지 않은 상태로 표시
   isDataSaved = false;
@@ -908,6 +1125,10 @@ function parseData() {
   // 버튼 상태 업데이트
   stepStatus.parse = true;
   updateButtonSteps();
+
+  // ── 입력폼 초기화 (다음 추가를 위해) ──
+  dataInput.value = '';
+  console.log(`+ ${addedCount}건 추가됨 (총 ${orders.length}건)`);
 }
 
 // Supabase 컬럼 매핑 (인덱스 -> 컬럼명)
@@ -1456,8 +1677,10 @@ async function startOrders() {
   isProcessing = true;
 
   // 버튼 상태 변경
+  // - 주문 진행은 숨김 (중복 클릭 방지)
+  // - 중단 버튼은 disabled 해제 → 빨강 활성 (지금 진행 중, 클릭 가능 의미)
   document.getElementById('btnStart').style.display = 'none';
-  document.getElementById('btnStop').style.display = 'inline-block';
+  document.getElementById('btnStop').disabled = false;
   document.getElementById('progressBar').style.display = 'block';
 
   try {
@@ -1471,9 +1694,10 @@ async function startOrders() {
     }
   } finally {
     isProcessing = false;
+    // 주문 진행 복원 + 중단 버튼은 다시 disabled (회색)
     document.getElementById('btnStart').style.display = 'inline-block';
-    document.getElementById('btnStop').style.display = 'none';
     document.getElementById('btnStart').disabled = false;
+    document.getElementById('btnStop').disabled = true;
   }
 }
 
@@ -1485,6 +1709,158 @@ function stopOrders() {
   }
 }
 
+// ========== 문의 탭: 정리 ==========
+function parseInquiryData() {
+  const inquiryDataInput = document.getElementById('inquiryDataInput');
+  const raw = inquiryDataInput.value.trim();
+
+  if (!raw) {
+    alert('데이터를 붙여넣기 해주세요.');
+    return;
+  }
+
+  const lines = raw.split('\n').filter(l => l.trim());
+  inquiryOrders = [];
+
+  lines.forEach((line, idx) => {
+    const parts = line.split('\t');
+    if (parts.length < 5) {
+      console.warn(`행 ${idx + 1}: 컬럼 부족 (${parts.length}개) — 무시`);
+      return;
+    }
+
+    const date = (parts[0] || '').trim();
+    const productInfo = (parts[1] || '').trim();
+    const chinaOption = (parts[2] || '').trim();
+    const quantity = parseInt(parts[3]) || 0;
+    const rawUrl = (parts[4] || '').trim();
+    const inquiryText = (parts[5] || '').trim();
+    const replyText = (parts[6] || '').trim();
+
+    const { cleanedUrl, offerId } = processUrl(rawUrl);
+
+    inquiryOrders.push({
+      date,
+      productInfo,
+      chinaOption,
+      quantity,
+      url: cleanedUrl,
+      offerId,
+      inquiryText,
+      replyText
+    });
+  });
+
+  renderInquiryList();
+
+  // 문의 버튼 활성화
+  const btnAsk = document.getElementById('btnInquiryAsk');
+  if (btnAsk) btnAsk.disabled = inquiryOrders.length === 0;
+
+  alert(`${inquiryOrders.length}건 정리 완료`);
+}
+
+// ========== 문의 탭: 테이블 렌더링 ==========
+function renderInquiryList() {
+  const container = document.getElementById('inquiryListContent');
+  const countEl = document.getElementById('inquiryCount');
+
+  if (countEl) countEl.textContent = `(${inquiryOrders.length})`;
+
+  if (inquiryOrders.length === 0) {
+    container.innerHTML = '<div class="empty-message">데이터를 입력하고 정리 버튼을 클릭하세요</div>';
+    return;
+  }
+
+  const escapeHtml = (s) => String(s || '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  let html = '<table class="inquiry-table"><thead><tr>'
+    + '<th>date</th><th>상품정보</th><th>중국어 옵션명</th><th>수량</th>'
+    + '<th>링크</th><th>문의내용</th><th>답변내용</th>'
+    + '</tr></thead><tbody>';
+
+  inquiryOrders.forEach(item => {
+    html += '<tr>'
+      + `<td>${escapeHtml(item.date)}</td>`
+      + `<td>${escapeHtml(item.productInfo)}</td>`
+      + `<td>${escapeHtml(item.chinaOption)}</td>`
+      + `<td style="text-align:center;">${item.quantity}</td>`
+      + `<td><a href="${escapeHtml(item.url)}" target="_blank" style="color:#1a73e8;">${escapeHtml(item.offerId || item.url)}</a></td>`
+      + `<td>${escapeHtml(item.inquiryText)}</td>`
+      + `<td>${escapeHtml(item.replyText)}</td>`
+      + '</tr>';
+  });
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// ========== 문의 탭: 판매자에게 문의 (첫 offer_id만) ==========
+async function startInquiry() {
+  if (inquiryOrders.length === 0) {
+    alert('문의할 데이터가 없습니다. 먼저 정리하세요.');
+    return;
+  }
+
+  // offer_id로 그룹화
+  const groupMap = new Map();
+  inquiryOrders.forEach(item => {
+    if (!item.offerId) return;
+    if (!groupMap.has(item.offerId)) {
+      groupMap.set(item.offerId, { offerId: item.offerId, url: item.url, items: [] });
+    }
+    groupMap.get(item.offerId).items.push({
+      chinaOption: item.chinaOption,
+      quantity: item.quantity
+    });
+  });
+
+  const groups = Array.from(groupMap.values());
+  if (groups.length === 0) {
+    alert('유효한 offer_id가 없습니다.');
+    return;
+  }
+
+  console.log(`[문의] ${groups.length}개 그룹 순차 처리 시작`);
+
+  const btn = document.getElementById('btnInquiryAsk');
+  if (btn) { btn.disabled = true; }
+
+  let successCount = 0;
+  const failedGroups = [];
+
+  try {
+    for (let i = 0; i < groups.length; i++) {
+      const group = groups[i];
+      if (btn) btn.textContent = `문의 중... (${i + 1}/${groups.length})`;
+      console.log(`[문의] [${i + 1}/${groups.length}] offer_id=${group.offerId}`);
+
+      try {
+        const result = await window.api.askInquiry(group);
+        if (result.success) {
+          successCount++;
+          console.log(`[문의] [${i + 1}/${groups.length}] 성공`);
+        } else {
+          failedGroups.push({ offerId: group.offerId, error: result.error });
+          console.warn(`[문의] [${i + 1}/${groups.length}] 실패: ${result.error}`);
+        }
+      } catch (e) {
+        failedGroups.push({ offerId: group.offerId, error: e.message });
+        console.error(`[문의] [${i + 1}/${groups.length}] 예외:`, e);
+      }
+    }
+
+    let msg = `문의 완료: ${successCount}/${groups.length}건 성공`;
+    if (failedGroups.length > 0) {
+      msg += '\n\n실패 목록:\n' + failedGroups.map(f => `· ${f.offerId}: ${f.error}`).join('\n');
+    }
+    alert(msg);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '문의'; }
+  }
+}
+
 // V2 참조코드 중지
 function stopRefCodesV2() {
   if (confirm('V2 참조코드 입력을 중지하시겠습니까?\n현재까지 처리된 주문은 유지됩니다.')) {
@@ -1492,30 +1868,6 @@ function stopRefCodesV2() {
   }
 }
 
-// 판매자 선택 테스트
-async function testShopSelect() {
-  const btn = document.getElementById('btnTestShopSelect');
-  btn.disabled = true;
-  btn.textContent = '테스트 중...';
-
-  try {
-    console.log('[테스트] 24개 배치 선택 시작...');
-    const result = await window.api.testShopSelect();
-    console.log('[테스트] 결과:', JSON.stringify(result, null, 2));
-
-    if (result.success) {
-      alert(`성공! ${result.checked}개 상점 체크됨`);
-    } else {
-      alert(`결과: ${result.checked || 0}개 체크됨\n${result.error || ''}`);
-    }
-  } catch (e) {
-    console.error('[테스트] 에러:', e);
-    alert(`에러: ${e.message}`);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '선택 테스트';
-  }
-}
 
 // 주문 생략 - 주문 진행 없이 바로 검수 가능하도록
 function skipOrders() {
@@ -3125,9 +3477,11 @@ async function inputRefCodesV2() {
   // userCode를 groupedData에 내장 (V1과 동일한 단일 객체 전달 패턴)
   groupedData._userCode = userCode;
 
-  // ── 버튼 상태: V2 → 중지 모드 ──
-  document.getElementById('btnRefCodeV2').style.display = 'none';
-  document.getElementById('btnStopV2').style.display = 'inline-block';
+  // ── 버튼 상태: 진행 중 ──
+  // - V2 참조코드 버튼은 그대로 보이되 중복 클릭 방지 위해 disabled
+  // - V2 중단 버튼은 disabled 해제 → 빨강 활성
+  document.getElementById('btnRefCodeV2').disabled = true;
+  document.getElementById('btnStopV2').disabled = false;
 
   // ── 자동화 실행 ──
   try {
@@ -3159,8 +3513,9 @@ async function inputRefCodesV2() {
   } catch (error) {
     alert('V2 참조코드 입력 중 오류가 발생했습니다: ' + error.message);
   } finally {
-    document.getElementById('btnRefCodeV2').style.display = 'inline-block';
-    document.getElementById('btnStopV2').style.display = 'none';
+    // 버튼 상태 복원: V2 참조코드 다시 활성, V2 중단은 회색(비활성)으로
+    document.getElementById('btnRefCodeV2').disabled = false;
+    document.getElementById('btnStopV2').disabled = true;
   }
 }
 
