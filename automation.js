@@ -2317,7 +2317,7 @@ async function inputRefCodesV2(groupedData, userCode) {
       console.log('+ Navigated to cart page');
 
       try {
-        await withStopCheck(() => page.waitForSelector('[class*="shop-container--container"]', { timeout: 30000 }));
+        await withStopCheck(() => page.waitForSelector('[class*="shop-container--container"]', { timeout: 10000 }));
         console.log('+ Shop containers found');
       } catch (e) {
         if (e.message === 'STOPPED_BY_USER') throw e;
@@ -2349,7 +2349,7 @@ async function inputRefCodesV2(groupedData, userCode) {
 
       const settleBtnSelector = '[class*="bottom-bar--submitBtn"]';
       let settleReady = false;
-      for (let pollCount = 0; pollCount < 60; pollCount++) {
+      for (let pollCount = 0; pollCount < 30; pollCount++) {
         checkShouldStop();
         await page.waitForTimeout(1000);
         const btn = page.locator(settleBtnSelector).first();
@@ -2365,7 +2365,7 @@ async function inputRefCodesV2(groupedData, userCode) {
       }
 
       if (!settleReady) {
-        exitReason = '结算 버튼 활성화 대기 실패 (60초)';
+        exitReason = '结算 버튼 활성화 대기 실패 (30초)';
         console.log(`  X ${exitReason}`);
         break;
       }
@@ -2376,7 +2376,7 @@ async function inputRefCodesV2(groupedData, userCode) {
 
       console.log('  Waiting for order confirmation page...');
       try {
-        await withStopCheck(() => page.waitForURL('**/order/confirm*', { timeout: 60000 }));
+        await withStopCheck(() => page.waitForURL('**/order/confirm*', { timeout: 30000 }));
         console.log('+ URL changed to order confirmation page');
       } catch (e) {
         if (e.message === 'STOPPED_BY_USER') throw e;
@@ -2384,7 +2384,7 @@ async function inputRefCodesV2(groupedData, userCode) {
       }
 
       try {
-        await withStopCheck(() => page.waitForSelector('.order-inner', { timeout: 60000 }));
+        await withStopCheck(() => page.waitForSelector('.order-inner', { timeout: 15000 }));
         console.log('+ Order inner elements loaded');
       } catch (e) {
         if (e.message === 'STOPPED_BY_USER') throw e;
@@ -2625,11 +2625,11 @@ async function inputRefCodesV2(groupedData, userCode) {
       // 提交订单 버튼: <q-button type="primary" disabled="false" loading="false">
       const submitBtnSelector = 'q-button[type="primary"][disabled="false"][loading="false"]';
       try {
-        await withStopCheck(() => page.waitForSelector(submitBtnSelector, { state: 'visible', timeout: 60000 }));
+        await withStopCheck(() => page.waitForSelector(submitBtnSelector, { state: 'visible', timeout: 30000 }));
         console.log('  + Submit button is ready (visible & enabled)');
       } catch (e) {
         if (e.message === 'STOPPED_BY_USER') throw e;
-        exitReason = '제출 버튼 활성화 대기 실패 (60초)';
+        exitReason = '제출 버튼 활성화 대기 실패 (30초)';
         console.log(`  X ${exitReason}: ${e.message}`);
         break;
       }
@@ -2639,24 +2639,28 @@ async function inputRefCodesV2(groupedData, userCode) {
       console.log('  + Submit order button clicked');
 
       // ── Section 6.6: 제출 완료 대기 ──
-      // 성공 페이지 URL 감지 (최대 30초) → 감지 후 5초 안정화
+      // 성공/결제 페이지 URL 감지 (최대 40초) → 미감지 시 루프 계속 (장바구니로 복귀)
       console.log('  Waiting for submission to complete...');
       let submissionDetected = false;
-      for (let waitSec = 0; waitSec < 60; waitSec++) {
+      for (let waitSec = 0; waitSec < 40; waitSec++) {
         await page.waitForTimeout(1000);
         checkShouldStop();
         const currentUrl = page.url();
-        if (currentUrl.includes('order_success') || currentUrl.includes('make_order_success')) {
-          console.log(`  + Submission success page detected (${waitSec + 1}s)`);
+        if (
+          currentUrl.includes('order_success') ||
+          currentUrl.includes('make_order_success') ||
+          currentUrl.includes('batch-cashier') ||
+          currentUrl.includes('cashierOrderNo')
+        ) {
+          console.log(`  + Submission success page detected (${waitSec + 1}s): ${currentUrl}`);
           submissionDetected = true;
           break;
         }
       }
       if (!submissionDetected) {
-        // 제출 미확인 → 이번 배치를 성공 처리하지 않고 중단 (이중 주문 방지)
-        exitReason = '주문 제출 확인 실패 (success URL 미감지 60초)';
-        console.log(`  X ${exitReason} - 이번 배치(${currentBatchIndexes.length}건) 성공 처리 안 함`);
-        break;
+        // 미감지 → 이번 배치 성공 처리 안 함, 루프 계속 (장바구니로 돌아가 다음 배치 처리)
+        console.log(`  ! 주문 성공 URL 미감지 (40초) - 이번 배치(${currentBatchIndexes.length}건) 성공 처리 안 함, 루프 계속`);
+        continue;
       }
 
       // 제출 확인 완료 → 이번 배치를 success 리스트에 병합
