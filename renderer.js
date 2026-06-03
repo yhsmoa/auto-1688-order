@@ -63,7 +63,7 @@ function applyOrderUnlockState() {
 const USER_CODE_BUTTON_VISIBILITY = {
   HI: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
   MB: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  BZ: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnDeduct', 'btnExportSuccess', 'btnExportFail'],
+  BZ: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeduct', 'btnExportSuccess', 'btnExportFail'],
   BO: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFail'],
 };
 
