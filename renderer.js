@@ -61,16 +61,17 @@ function applyOrderUnlockState() {
 // 중단 버튼(btnStop, btnStopV2)은 작업 진행 상태에 따라 자체 제어되므로
 // user_code 그룹 가시성 토글 대상에서 분리
 const USER_CODE_BUTTON_VISIBILITY = {
-  HI: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  MB: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  BZ: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnDeduct', 'btnExportSuccess', 'btnExportFail'],
-  BO: ['btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFail'],
+  HI: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  MB: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnDeduct', 'btnExportSuccess', 'btnExportFail'],
+  BO: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFail'],
 };
 
 // 우측 패널의 모든 버튼 ID (가시성 계산용)
 // - 'btnSave'(추가): 입력 섹션에 위치
 // - 'btnStop'/'btnStopV2': 작업 진행 상태로 자체 제어 (disabled 토글)
 const ALL_RP_ORDER_BUTTONS = [
+  'btnRangeSelect', 'btnRangeDeselect',
   'btnSkip', 'btnStart', 'btnReview',
   'btnRefCode', 'btnRefCodeV2',
   'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2',
@@ -135,7 +136,7 @@ function pruneEmptyRpGroups() {
         prevVisibleGroup = el;
         pendingDivider = null;
       }
-    } else if (el.classList.contains('rp-divider')) {
+    } else if (el.classList.contains('rp-divider') || el.classList.contains('rp-divider-line')) {
       el.style.display = 'none';  // 일단 숨겼다가 다음 보이는 그룹 만나면 켬
       pendingDivider = el;
     }
@@ -155,18 +156,24 @@ function switchTab(tabName) {
   if (tabName === 'order') {
     document.getElementById('tab-order').classList.add('active');
     document.getElementById('sideOrder').classList.add('active');
+  } else if (tabName === 'orderV2') {
+    document.getElementById('tab-orderV2').classList.add('active');
+    document.getElementById('sideOrderV2').classList.add('active');
+    // 진입 시 드롭박스 새로고침
+    loadFtOrdersDropdown();
   } else if (tabName === 'inquiry') {
     document.getElementById('tab-inquiry').classList.add('active');
     document.getElementById('sideInquiry').classList.add('active');
   }
 
-  // 우측 액션 패널 섹션 전환
-  document.getElementById('rpOrder').style.display = tabName === 'order' ? 'flex' : 'none';
+  // 우측 액션 패널 섹션 전환 — rpOrder 는 주문/V2 주문 두 탭 공유
+  const isOrderLike = tabName === 'order' || tabName === 'orderV2';
+  document.getElementById('rpOrder').style.display = isOrderLike ? 'flex' : 'none';
   document.getElementById('rpInquiry').style.display = tabName === 'inquiry' ? 'flex' : 'none';
 
-  // 상단 헤더의 패스워드 + 사용자/유저 드롭박스 — 주문 탭에서만 노출
+  // 상단 헤더의 패스워드 + 사용자/유저 드롭박스 — 주문/V2 주문 탭에서 노출
   const userControls = document.getElementById('userControls');
-  if (userControls) userControls.style.display = tabName === 'order' ? 'flex' : 'none';
+  if (userControls) userControls.style.display = isOrderLike ? 'flex' : 'none';
 
   updateDataInputState();
 }
@@ -775,10 +782,11 @@ function populateFtUserSelect() {
   updateDataInputState();
   applyUserCodeButtonVisibility();
 
-  // 유저 선택 시 데이터 입력 활성화 + user_code 그룹별 버튼 가시성 갱신
+  // 유저 선택 시 데이터 입력 활성화 + user_code 그룹별 버튼 가시성 갱신 + V2 드롭박스 새로고침
   select.addEventListener('change', () => {
     updateDataInputState();
     applyUserCodeButtonVisibility();
+    if (typeof loadFtOrdersDropdown === 'function') loadFtOrdersDropdown();
   });
 }
 
@@ -980,7 +988,7 @@ function processUrl(rawUrl) {
 }
 
 // 데이터 파싱
-function parseData() {
+async function parseData() {
   console.log('parseData 함수 호출됨');
   const dataInput = document.getElementById('dataInput');
   const input = dataInput.value.trim();
@@ -1106,6 +1114,70 @@ function parseData() {
     return;
   }
 
+  // ── 중복 사전 체크 (orders.push 직전) ──
+  // Supabase 의 ft_order_items 에 동일 데이터가 이미 존재하는지 조회.
+  //   B열 order_number → ft_order_items.item_no
+  //   S열 order_code   → ft_order_items.order_no
+  // 중복이 있으면 사용자에게 진행 여부를 묻는다.
+  const candNumbers = [...new Set(
+    newOrders.map(o => o.dbData?.order_number).filter(Boolean)
+  )];
+  const candCodes = [...new Set(
+    newOrders.map(o => o.dbData?.order_code).filter(Boolean)
+  )];
+
+  console.log('[중복체크] supabaseClient:', !!supabaseClient,
+              '| candNumbers(item_no):', candNumbers,
+              '| candCodes(order_no):', candCodes);
+
+  const dupes = { byNumber: [], byCode: [] };
+  try {
+    if (!supabaseClient) {
+      console.warn('[중복체크] supabaseClient 가 초기화되지 않음 — 중복 검사 건너뜀');
+    }
+    if (candNumbers.length > 0 && supabaseClient) {
+      const { data, error } = await supabaseClient
+        .from('ft_order_items')
+        .select('item_no')
+        .in('item_no', candNumbers);
+      console.log('[중복체크] item_no 조회 결과:', { data, error });
+      if (error) throw error;
+      dupes.byNumber = (data || []).map(r => r.item_no);
+    }
+    if (candCodes.length > 0 && supabaseClient) {
+      const { data, error } = await supabaseClient
+        .from('ft_order_items')
+        .select('order_no')
+        .in('order_no', candCodes);
+      console.log('[중복체크] order_no 조회 결과:', { data, error });
+      if (error) throw error;
+      dupes.byCode = (data || []).map(r => r.order_no);
+    }
+  } catch (e) {
+    console.error('중복 사전 조회 실패:', e);
+    if (!confirm('중복 사전 조회 중 오류가 발생했습니다. 그대로 진행할까요?')) {
+      return;
+    }
+  }
+
+  console.log('[중복체크] 최종 dupes:', dupes);
+
+  const dupNumberSet = new Set(dupes.byNumber);
+  const dupCodeSet = new Set(dupes.byCode);
+  if (dupNumberSet.size > 0 || dupCodeSet.size > 0) {
+    const sample = [
+      ...[...dupNumberSet].slice(0, 3).map(v => `order_number(item_no): ${v}`),
+      ...[...dupCodeSet].slice(0, 3).map(v => `order_code(order_no): ${v}`)
+    ].join('\n');
+    const msg =
+      '이미 중복된 데이터가 있습니다. 진행을 원하십니까 ?\n' +
+      '중복된 데이터가 존재하며 저장 시 문제가 생길 수 있습니다.\n\n' +
+      `중복 ${dupNumberSet.size + dupCodeSet.size}건 발견:\n${sample}`;
+    if (!confirm(msg)) {
+      return; // '취소' → 추가 중단 (orders/미리보기/입력폼 그대로 유지)
+    }
+  }
+
   // ── 누적 추가: 기존 orders 보존, 새 행만 push ──
   const addedCount = newOrders.length;
   orders.push(...newOrders);
@@ -1129,6 +1201,175 @@ function parseData() {
   // ── 입력폼 초기화 (다음 추가를 위해) ──
   dataInput.value = '';
   console.log(`+ ${addedCount}건 추가됨 (총 ${orders.length}건)`);
+}
+
+// ════════════════════════════════════════════════════════════
+// V2 주문 탭 — 장바구니 불러오기 (ft_orders / ft_order_items 에서 직접 적재)
+// ════════════════════════════════════════════════════════════
+
+// 드롭박스 채우기: 선택된 사용자의 ft_orders.status='NEW' 행들의 order_no
+async function loadFtOrdersDropdown() {
+  const sel = document.getElementById('ftOrderSelectV2');
+  const btn = document.getElementById('btnAddV2');
+  if (!sel || !btn) return;
+
+  const ftUserSelect = document.getElementById('ftUserSelect');
+  const userId = ftUserSelect?.value || '';
+
+  sel.innerHTML = '';
+  btn.disabled = true;
+
+  if (!userId) {
+    sel.innerHTML = '<option value="">사용자를 먼저 선택하세요</option>';
+    return;
+  }
+  if (!supabaseClient) {
+    sel.innerHTML = '<option value="">Supabase 초기화 안됨</option>';
+    return;
+  }
+
+  const { data, error } = await supabaseClient
+    .from('ft_orders')
+    .select('id, order_no, total_qty, created_at')
+    .eq('user_id', userId)
+    .eq('status', 'NEW')
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('ft_orders 조회 실패:', error);
+    sel.innerHTML = '<option value="">조회 실패</option>';
+    return;
+  }
+  if (!data || data.length === 0) {
+    sel.innerHTML = '<option value="">NEW 상태 주문 없음</option>';
+    return;
+  }
+
+  sel.innerHTML = '<option value="">선택...</option>';
+  data.forEach(row => {
+    const opt = document.createElement('option');
+    opt.value = row.id;
+    opt.dataset.orderNo = row.order_no;
+    opt.textContent = `${row.order_no} (${row.total_qty || 0}건)`;
+    sel.appendChild(opt);
+  });
+
+  sel.onchange = () => { btn.disabled = !sel.value; };
+}
+
+// shipment 역매핑: ft_order_items 의 shipment_type/coupang_shipment_size/personal_order_no
+// → 시트 V열 원본 형태로 복원
+function vReverseFromShipment(it) {
+  if (it.shipment_type === 'PERSONAL') return `P-${it.personal_order_no || ''}`;
+  if (it.shipment_type === 'DIRECT')   return 'DIRECT';
+  return it.coupang_shipment_size || ''; // COUPANG 또는 미설정
+}
+
+// ft_order_items 행 → parseData 출력과 동일한 order 객체로 역매핑
+function reconstructOrderFromFtItem(it) {
+  // requested_date(YYYY-MM-DD) → MMDD 역변환
+  const rawDateMMDD = (() => {
+    const d = it.requested_date || '';
+    const m = d.match(/^\d{4}-(\d{2})-(\d{2})$/);
+    return m ? `${m[1]}${m[2]}` : null;
+  })();
+
+  return {
+    orderNo: it.item_no || '',
+    quantity: it.order_qty || 0,
+    color: it.china_option1 || '',
+    size: it.china_option2 || '',
+    url: it.site_url || '',
+    orderCode: it.order_no || '',
+    status: 'pending',
+    errorReason: '',
+    dbData: {
+      date: new Date().toISOString(),
+      raw_date: rawDateMMDD,
+      order_number: it.item_no || null,
+      item_name: it.item_name || null,
+      option_name: it.option_name || null,
+      order_qty: it.order_qty || null,
+      barcode: it.barcode || null,
+      china_option1: it.china_option1 || null,
+      china_option2: it.china_option2 || null,
+      china_price: it.price_cny ?? null,
+      china_total_price: it.price_total_cny ?? null,
+      img_url: it.img_url || null,
+      site_url: it.site_url || null,
+      status_ordering: null,
+      status_import: null,
+      status_cancel: null,
+      status_export: null,
+      korea_note: it.note_kr || null,
+      china_note: it.note_cn || null,
+      order_code: it.order_no || null,
+      shipment_code: null,
+      option_id: it.vendor_option_id || null,
+      coupang_shipment_size: vReverseFromShipment(it),
+      composition: it.composition || null,
+      recomanded_age: it.recommanded_age || null,
+      set_total: it.set_total || null,
+      set_seq: it.set_seq || null,
+      '1688_offer_id': it['1688_offer_id'] || null,
+      '1688_order_id': it['1688_order_id'] || null,
+    },
+    originalData: []
+  };
+}
+
+// [추가] 버튼: 선택된 ft_orders.id 의 ft_order_items 를 fetch 해 orders[] 에 적재
+async function addFromCartV2() {
+  const sel = document.getElementById('ftOrderSelectV2');
+  const ftOrderId = sel?.value;
+  if (!ftOrderId) {
+    alert('주문(order_no)을 먼저 선택하세요.');
+    return;
+  }
+  if (!supabaseClient) {
+    alert('Supabase 초기화 안됨');
+    return;
+  }
+
+  const { data: items, error } = await supabaseClient
+    .from('ft_order_items')
+    .select('*')
+    .eq('order_id', ftOrderId)
+    .order('item_seq', { ascending: true });
+
+  if (error) {
+    console.error('ft_order_items 조회 실패:', error);
+    alert(`ft_order_items 조회 실패: ${error.message}`);
+    return;
+  }
+  if (!items || items.length === 0) {
+    alert('해당 주문에 아이템이 없습니다.');
+    return;
+  }
+
+  const newOrders = items.map(it => reconstructOrderFromFtItem(it));
+  orders.push(...newOrders);
+
+  isDataSaved = false;
+  renderDataPreview();
+  renderOrderList();
+  const btnSkip = document.getElementById('btnSkip');
+  const btnStart = document.getElementById('btnStart');
+  const btnReview = document.getElementById('btnReview');
+  if (btnSkip) btnSkip.disabled = false;
+  if (btnStart) btnStart.disabled = false;
+  if (btnReview) btnReview.disabled = false;
+  stepStatus.parse = true;
+  updateButtonSteps();
+
+  // 사용 완료된 옵션 드롭박스에서 제거
+  const usedOpt = sel.querySelector(`option[value="${ftOrderId}"]`);
+  if (usedOpt) usedOpt.remove();
+  sel.value = '';
+  const btnAdd = document.getElementById('btnAddV2');
+  if (btnAdd) btnAdd.disabled = true;
+
+  alert(`${newOrders.length}건 추가됨 (총 ${orders.length}건)`);
 }
 
 // Supabase 컬럼 매핑 (인덱스 -> 컬럼명)
@@ -1334,18 +1575,29 @@ function closePreviewModal(event) {
 
 // 주문 목록 렌더링
 function renderOrderList() {
+  // 주문 탭(#orderListContent) + V2 주문 탭(#orderListContentV2) 양쪽에 동일 내용 렌더
   const container = document.getElementById('orderListContent');
+  const containerV2 = document.getElementById('orderListContentV2');
   const countSpan = document.getElementById('orderCount');
+  const countSpanV2 = document.getElementById('orderCountV2');
+  const setBoth = (html) => {
+    if (container) container.innerHTML = html;
+    if (containerV2) containerV2.innerHTML = html;
+  };
+  const setCount = (txt) => {
+    if (countSpan) countSpan.textContent = txt;
+    if (countSpanV2) countSpanV2.textContent = txt;
+  };
 
   if (orders.length === 0) {
-    container.innerHTML = '<div class="empty-message">데이터를 입력하고 저장 버튼을 클릭하세요</div>';
-    countSpan.textContent = '';
+    setBoth('<div class="empty-message">데이터를 입력하고 저장 버튼을 클릭하세요</div>');
+    setCount('');
     return;
   }
 
   const successCount = orders.filter(o => o.status === 'success').length;
   const errorCount = orders.filter(o => o.status === 'error').length;
-  countSpan.textContent = `(총 ${orders.length}건 | 성공: ${successCount} | 실패: ${errorCount})`;
+  setCount(`(총 ${orders.length}건 | 성공: ${successCount} | 실패: ${errorCount})`);
 
   let html = `
     <table class="order-table">
@@ -1608,7 +1860,7 @@ function renderOrderList() {
     `;
   }
 
-  container.innerHTML = html;
+  setBoth(html);
 
   // 데이터 미리보기 갱신
   renderDataPreview();
@@ -2243,6 +2495,33 @@ function toggleComplete(index) {
   }
 }
 
+// ── 범위 체크박스 선택/해제 (우측 사이드바 최상단) ──
+// 두 입력폼이 모두 채워졌을 때만 선택/해제 버튼 활성화
+function updateRangeButtons() {
+  const s = document.getElementById('rangeStart');
+  const e = document.getElementById('rangeEnd');
+  const btnSel = document.getElementById('btnRangeSelect');
+  const btnDes = document.getElementById('btnRangeDeselect');
+  if (!s || !e || !btnSel || !btnDes) return;
+  const ok = s.value !== '' && e.value !== '' &&
+             Number(s.value) >= 1 && Number(e.value) >= 1;
+  btnSel.disabled = !ok;
+  btnDes.disabled = !ok;
+}
+
+// 범위(# 기준, 1-based) 체크박스 일괄 ON/OFF
+function applyRangeCheck(checked) {
+  const s = Number(document.getElementById('rangeStart').value);
+  const e = Number(document.getElementById('rangeEnd').value);
+  if (!Number.isFinite(s) || !Number.isFinite(e)) return;
+  const lo = Math.min(s, e), hi = Math.max(s, e);
+  for (let i = lo - 1; i <= hi - 1 && i < orders.length; i++) {
+    if (i < 0) continue;
+    orders[i].checked = checked;
+  }
+  renderOrderList();
+}
+
 // 결과 상태 토글 함수 (실패 -> 성공 -> 실패)
 function toggleResultStatus(index) {
   if (index < orders.length) {
@@ -2483,6 +2762,23 @@ function applyAllCartData() {
 
   renderOrderList();
   alert(`${appliedCount}건의 카트 데이터가 적용되었습니다.`);
+}
+
+// 체크된 행에 한해 검수열(ok) + 완료열(true) 일괄 전환
+function markCheckedComplete() {
+  const targets = orders.filter(o => o && o.checked === true);
+  if (targets.length === 0) {
+    alert('체크된 항목이 없습니다. 먼저 체크박스를 선택하세요.');
+    return;
+  }
+  if (!confirm(`체크된 ${targets.length}건을 검수 OK + 완료 상태로 전환하시겠습니까?`)) {
+    return;
+  }
+  targets.forEach(o => {
+    o.reviewStatus = 'ok';
+    o.finalComplete = true;
+  });
+  renderOrderList();
 }
 
 // 사유 모달 관련 변수

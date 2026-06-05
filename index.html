@@ -379,7 +379,7 @@
       background: #ec971f;
     }
 
-    /* 링크수정 버튼 */
+    /* 링크수정 버튼 (legacy — 현재는 .btn-export-gray 사용) */
     .btn-link-edit {
       background: #5a6fd6;
       color: white;
@@ -387,6 +387,53 @@
 
     .btn-link-edit:hover {
       background: #4a5fc6;
+    }
+
+    /* 헤더용 회색 버튼 (활성 회색) */
+    .btn-export-gray {
+      background: #adb5bd;
+      color: white;
+    }
+    .btn-export-gray:hover {
+      background: #8a9197;
+    }
+
+    /* 헤더용 파란색 버튼 (검수-완료) */
+    .btn-export-blue {
+      background: #337ab7;
+      color: white;
+    }
+    .btn-export-blue:hover {
+      background: #286090;
+    }
+
+    /* 우측 사이드바 범위 입력 — 미니멀 (스피너 제거, 작은 폰트) */
+    .range-input {
+      width: 52px;
+      padding: 4px 2px;
+      font-size: 10px;
+      text-align: center;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      -moz-appearance: textfield;
+    }
+    .range-input::-webkit-inner-spin-button,
+    .range-input::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    .range-input-tilde {
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    /* 그룹 간 가로선 구분 (⬇ 대안) */
+    .rp-divider-line {
+      text-align: center;
+      font-size: 10px;
+      letter-spacing: 1px;
+      color: rgba(255, 255, 255, 0.3);
+      line-height: 1;
     }
 
     /* 링크 수정 모달 */
@@ -1332,6 +1379,24 @@
     <!-- 주문 탭 버튼 그룹 -->
     <div class="rp-section" id="rpOrder">
 
+      <!-- 범위 체크박스 선택/해제 -->
+      <div class="rp-group" id="rpRangeGroup">
+        <div style="display:flex; align-items:center; gap:4px; justify-content:center;">
+          <input type="number" id="rangeStart" min="1" max="999"
+                 class="range-input" placeholder="시작"
+                 oninput="updateRangeButtons()">
+          <span class="range-input-tilde">~</span>
+          <input type="number" id="rangeEnd" min="1" max="999"
+                 class="range-input" placeholder="끝"
+                 oninput="updateRangeButtons()">
+        </div>
+        <button class="btn-step btn-apply-cart" id="btnRangeSelect"
+                onclick="applyRangeCheck(true)" disabled>선택</button>
+        <button class="btn-step btn-apply-cart" id="btnRangeDeselect"
+                onclick="applyRangeCheck(false)" disabled>해제</button>
+      </div>
+      <div class="rp-divider-line">──────────</div>
+
       <!-- 주문 진행 -->
       <!-- ('정리' 버튼은 입력 섹션 우측 상단으로 이동 → '추가' 버튼) -->
       <div class="rp-group">
@@ -1411,6 +1476,10 @@
 
   <!-- ─── 좌측 고정 사이드바 ─── -->
   <div class="sidebar">
+    <div class="sidebar-item" id="sideOrderV2" onclick="switchTab('orderV2')">
+      <span class="s-icon">🛒</span>
+      <span class="s-label">V2 주문</span>
+    </div>
     <div class="sidebar-item active" id="sideOrder" onclick="switchTab('order')">
       <span class="s-icon">🛍️</span>
       <span class="s-label">주문</span>
@@ -1494,8 +1563,9 @@
       <h3>
         <span>주문 목록 <span id="orderCount"></span></span>
         <div class="order-list-header-buttons">
-          <button class="btn-export btn-link-edit" onclick="openLinkEditModal()">링크수정</button>
-          <button class="btn-export btn-apply-cart" onclick="applyAllCartData()">일괄 적용</button>
+          <button class="btn-export btn-export-gray" onclick="openLinkEditModal()">링크수정</button>
+          <button class="btn-export btn-export-gray" onclick="applyAllCartData()">일괄 적용</button>
+          <button class="btn-export btn-export-blue" onclick="markCheckedComplete()">검수-완료</button>
         </div>
       </h3>
       <div class="progress-bar" id="progressBar" style="display: none;">
@@ -1528,6 +1598,39 @@
     <div style="height: 300px;"></div>
 
       </div><!-- /tab-order -->
+
+      <!-- ─── V2 주문 탭 ─── -->
+      <div class="tab-content" id="tab-orderV2">
+        <div class="input-section">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <h3 style="margin:0;">장바구니 불러오기</h3>
+          </div>
+          <p style="font-size:11px; color:#666; margin:0 0 10px 0;">
+            사용자가 1688 장바구니에 미리 담아둔 주문(ft_orders.status=NEW)을 선택해 불러옵니다
+          </p>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <select id="ftOrderSelectV2" style="flex:1; padding:8px; font-size:13px;">
+              <option value="">사용자를 먼저 선택하세요</option>
+            </select>
+            <button class="btn-step" id="btnAddV2" onclick="addFromCartV2()" disabled>추가</button>
+          </div>
+        </div>
+
+        <div class="order-list">
+          <h3>
+            <span>주문 목록 <span id="orderCountV2"></span></span>
+            <div class="order-list-header-buttons">
+              <button class="btn-export btn-export-gray" onclick="openLinkEditModal()">링크수정</button>
+              <button class="btn-export btn-export-gray" onclick="applyAllCartData()">일괄 적용</button>
+              <button class="btn-export btn-export-blue" onclick="markCheckedComplete()">검수-완료</button>
+            </div>
+          </h3>
+          <div id="orderListContentV2">
+            <div class="empty-message">사용자 선택 → 주문 선택 → [추가] 버튼을 클릭하세요</div>
+          </div>
+        </div>
+        <div style="height: 300px;"></div>
+      </div><!-- /tab-orderV2 -->
 
       <!-- ─── 문의 탭 ─── -->
       <div class="tab-content" id="tab-inquiry">

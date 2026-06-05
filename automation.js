@@ -53,6 +53,36 @@ function launchChromeDebug(chromePath) {
   });
 }
 
+// 1688 봇 인증 챌린지 감지: "subtree intercepts pointer events" 패턴이면
+// 슬라이더/캡차 같은 봇 차단 레이어가 클릭 대상을 가린 상황으로 간주.
+// 재시도/우회를 시도하면 IP/계정 차단 위험이 있으므로 즉시 중단해야 함.
+class BotChallengeError extends Error {
+  constructor(originalError) {
+    super('Bot challenge detected (1688 anti-crawl). Aborting to avoid block.');
+    this.name = 'BotChallengeError';
+    this.original = originalError;
+  }
+}
+
+function isBotInterceptError(err) {
+  return !!(err && typeof err.message === 'string' &&
+            err.message.includes('intercepts pointer events'));
+}
+
+// click 래퍼: intercept 에러를 BotChallengeError 로 변환하고,
+// timeout 을 20s 로 잡아서 느린 PC 에서의 정상 클릭은 통과시키되,
+// 봇 챌린지 상황의 Playwright 30s 재시도는 빠르게 끊는다.
+async function safeClick(locator, opts = {}) {
+  try {
+    await locator.click({ timeout: 20000, ...opts });
+  } catch (e) {
+    if (isBotInterceptError(e)) {
+      throw new BotChallengeError(e);
+    }
+    throw e;
+  }
+}
+
 // 페이지에 stealth 스크립트 적용
 async function applyStealthScripts(page) {
   await page.addInitScript(() => {
@@ -245,8 +275,8 @@ async function clickAndWaitForNewModal(page, addCartBtn, maxRetries = 2) {
       }).catch(() => {});
     }
 
-    // 3. 클릭
-    await addCartBtn.first().click();
+    // 3. 클릭 (봇 챌린지 감지 시 BotChallengeError 로 즉시 중단)
+    await safeClick(addCartBtn.first());
 
     // 4. 새로운 성공 모달 대기 (기존 모달은 제거했으므로 새것만 감지됨)
     try {
@@ -730,7 +760,7 @@ async function processGroupOrder(page, group, onProgress) {
         const colorMatchResult = findSizeMatch(item.color, availableColors);
 
         if (colorMatchResult.match) {
-          await colorMatchResult.match.button.click();
+          await safeClick(colorMatchResult.match.button);
           console.log(`  + Color matched (${colorMatchResult.type}): ${colorMatchResult.match.text}`);
         } else if (colorMatchResult.type === 'multiple') {
           throw new Error(`Color ambiguous: ${item.color} (${colorMatchResult.count} matches)`);
@@ -799,7 +829,7 @@ async function processGroupOrder(page, group, onProgress) {
         // 색상 매칭 (사이즈와 동일한 규칙 적용)
         const colorMatchResult = findSizeMatch(item.color, availableColors);
         if (colorMatchResult.match) {
-          await colorMatchResult.match.button.click();
+          await safeClick(colorMatchResult.match.button);
           console.log(`  + Color selected (${colorMatchResult.type}): ${colorMatchResult.match.text}`);
         } else if (colorMatchResult.type === 'multiple') {
           throw new Error(`Color ambiguous: ${item.color} (${colorMatchResult.count} matches)`);
@@ -839,7 +869,7 @@ async function processGroupOrder(page, group, onProgress) {
       console.log(`  Entering quantity: ${item.quantity}`);
       const inputField = targetRow.locator('.ant-input-number-input');
       await inputField.scrollIntoViewIfNeeded();
-      await inputField.click();
+      await safeClick(inputField);
       await inputField.fill('');
       await inputField.type(item.quantity.toString(), { delay: 50 });
       await page.keyboard.press('Tab');
@@ -850,6 +880,21 @@ async function processGroupOrder(page, group, onProgress) {
       console.log(`  + Option & quantity set for this item`);
 
     } catch (error) {
+      // 봇 챌린지 감지 시: 이 아이템 + 같은 그룹의 미처리 아이템을 모두 표시하고 상위로 전파
+      if (error && error.name === 'BotChallengeError') {
+        console.log(`  *** BOT CHALLENGE DETECTED — aborting this group ***`);
+        item.optionSelected = false;
+        item.error = error.message;
+        // 현재 아이템 + 아직 손대지 않은 같은 그룹 아이템들 일괄 실패 마킹
+        items.forEach(it => {
+          if (it.optionSelected === true) return; // 이미 옵션 선택 끝난 건 그대로
+          it.orderIndices.forEach(idx => {
+            onProgress({ index: idx, status: 'error', errorReason: 'Bot challenge detected — stopped' });
+          });
+        });
+        throw error; // processOrders 외부 루프가 잡아서 전체 중단
+      }
+
       console.log(`  X FAILED: ${error.message}`);
       item.optionSelected = false;
       item.error = error.message;
@@ -986,7 +1031,24 @@ async function processOrders(orders, onProgress) {
       const group = groups[i];
       console.log(`\n[Group ${i + 1}/${groups.length}] Processing...`);
 
-      await processGroupOrder(page, group, onProgress);
+      try {
+        await processGroupOrder(page, group, onProgress);
+      } catch (e) {
+        // 봇 챌린지 감지: 남은 그룹 전부 에러 표시 후 즉시 중단 (차단 방지)
+        if (e && e.name === 'BotChallengeError') {
+          console.log('\n*** BOT CHALLENGE DETECTED — STOPPING ALL ORDERS TO AVOID BLOCK ***');
+          for (let j = i + 1; j < groups.length; j++) {
+            groups[j].items.forEach(item => {
+              item.orderIndices.forEach(idx => {
+                onProgress({ index: idx, status: 'error', errorReason: 'Bot challenge detected — stopped' });
+              });
+            });
+          }
+          shouldStop = true;
+          break;
+        }
+        throw e;
+      }
 
       // 다음 그룹 전 잠시 대기
       if (i < groups.length - 1) {
