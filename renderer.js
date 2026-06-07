@@ -175,6 +175,12 @@ function switchTab(tabName) {
   const userControls = document.getElementById('userControls');
   if (userControls) userControls.style.display = isOrderLike ? 'flex' : 'none';
 
+  // 공유 주문 목록 영역 — 주문/V2 주문 탭에서만 노출 (inquiry 탭에서는 숨김)
+  const sharedOrderList = document.getElementById('sharedOrderList');
+  const sharedOrderListSpacer = document.getElementById('sharedOrderListSpacer');
+  if (sharedOrderList) sharedOrderList.style.display = isOrderLike ? '' : 'none';
+  if (sharedOrderListSpacer) sharedOrderListSpacer.style.display = isOrderLike ? '' : 'none';
+
   updateDataInputState();
 }
 
@@ -1228,6 +1234,7 @@ async function loadFtOrdersDropdown() {
     return;
   }
 
+  // 1) ft_orders 행 자체 조회
   const { data, error } = await supabaseClient
     .from('ft_orders')
     .select('id, order_no, total_qty, created_at')
@@ -1245,12 +1252,30 @@ async function loadFtOrdersDropdown() {
     return;
   }
 
+  // 2) ft_order_items 에서 order_id 별 행 수 집계 (FK 없이도 동작)
+  //    ft_orders.total_qty 는 NEW 상태에서 비어있는 경우가 많아서 실제 아이템 수로 표시.
+  const orderIds = data.map(r => r.id);
+  const countMap = new Map();
+  try {
+    const { data: items, error: itemsErr } = await supabaseClient
+      .from('ft_order_items')
+      .select('order_id')
+      .in('order_id', orderIds);
+    if (itemsErr) throw itemsErr;
+    (items || []).forEach(it => {
+      countMap.set(it.order_id, (countMap.get(it.order_id) || 0) + 1);
+    });
+  } catch (e) {
+    console.warn('ft_order_items 건수 조회 실패, total_qty 로 표시:', e);
+  }
+
   sel.innerHTML = '<option value="">선택...</option>';
   data.forEach(row => {
+    const itemCount = countMap.get(row.id) ?? row.total_qty ?? 0;
     const opt = document.createElement('option');
     opt.value = row.id;
     opt.dataset.orderNo = row.order_no;
-    opt.textContent = `${row.order_no} (${row.total_qty || 0}건)`;
+    opt.textContent = `${row.order_no} (${itemCount}건)`;
     sel.appendChild(opt);
   });
 
@@ -1274,12 +1299,17 @@ function reconstructOrderFromFtItem(it) {
     return m ? `${m[1]}${m[2]}` : null;
   })();
 
+  // site_url 에서 offer_id 직접 추출 — parseData 와 동일하게 processUrl 재사용.
+  // ft_order_items.1688_offer_id 컬럼이 비어있는 데이터도 표시/저장 가능.
+  const { cleanedUrl, offerId: extractedOfferId } = processUrl(it.site_url || '');
+  const offerId = extractedOfferId || it['1688_offer_id'] || null;
+
   return {
     orderNo: it.item_no || '',
     quantity: it.order_qty || 0,
     color: it.china_option1 || '',
     size: it.china_option2 || '',
-    url: it.site_url || '',
+    url: cleanedUrl,
     orderCode: it.order_no || '',
     status: 'pending',
     errorReason: '',
@@ -1296,7 +1326,7 @@ function reconstructOrderFromFtItem(it) {
       china_price: it.price_cny ?? null,
       china_total_price: it.price_total_cny ?? null,
       img_url: it.img_url || null,
-      site_url: it.site_url || null,
+      site_url: cleanedUrl,
       status_ordering: null,
       status_import: null,
       status_cancel: null,
@@ -1311,7 +1341,7 @@ function reconstructOrderFromFtItem(it) {
       recomanded_age: it.recommanded_age || null,
       set_total: it.set_total || null,
       set_seq: it.set_seq || null,
-      '1688_offer_id': it['1688_offer_id'] || null,
+      '1688_offer_id': offerId,
       '1688_order_id': it['1688_order_id'] || null,
     },
     originalData: []
@@ -1573,31 +1603,20 @@ function closePreviewModal(event) {
   }
 }
 
-// 주문 목록 렌더링
+// 주문 목록 렌더링 — 공유 영역(#orderListContent) 하나만 갱신
 function renderOrderList() {
-  // 주문 탭(#orderListContent) + V2 주문 탭(#orderListContentV2) 양쪽에 동일 내용 렌더
   const container = document.getElementById('orderListContent');
-  const containerV2 = document.getElementById('orderListContentV2');
   const countSpan = document.getElementById('orderCount');
-  const countSpanV2 = document.getElementById('orderCountV2');
-  const setBoth = (html) => {
-    if (container) container.innerHTML = html;
-    if (containerV2) containerV2.innerHTML = html;
-  };
-  const setCount = (txt) => {
-    if (countSpan) countSpan.textContent = txt;
-    if (countSpanV2) countSpanV2.textContent = txt;
-  };
 
   if (orders.length === 0) {
-    setBoth('<div class="empty-message">데이터를 입력하고 저장 버튼을 클릭하세요</div>');
-    setCount('');
+    container.innerHTML = '<div class="empty-message">데이터를 입력하고 저장 버튼을 클릭하세요</div>';
+    countSpan.textContent = '';
     return;
   }
 
   const successCount = orders.filter(o => o.status === 'success').length;
   const errorCount = orders.filter(o => o.status === 'error').length;
-  setCount(`(총 ${orders.length}건 | 성공: ${successCount} | 실패: ${errorCount})`);
+  countSpan.textContent = `(총 ${orders.length}건 | 성공: ${successCount} | 실패: ${errorCount})`;
 
   let html = `
     <table class="order-table">
@@ -1860,7 +1879,7 @@ function renderOrderList() {
     `;
   }
 
-  setBoth(html);
+  container.innerHTML = html;
 
   // 데이터 미리보기 갱신
   renderDataPreview();

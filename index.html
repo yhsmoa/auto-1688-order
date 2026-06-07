@@ -1559,43 +1559,7 @@
       </div>
     </div>
 
-    <div class="order-list">
-      <h3>
-        <span>주문 목록 <span id="orderCount"></span></span>
-        <div class="order-list-header-buttons">
-          <button class="btn-export btn-export-gray" onclick="openLinkEditModal()">링크수정</button>
-          <button class="btn-export btn-export-gray" onclick="applyAllCartData()">일괄 적용</button>
-          <button class="btn-export btn-export-blue" onclick="markCheckedComplete()">검수-완료</button>
-        </div>
-      </h3>
-      <div class="progress-bar" id="progressBar" style="display: none;">
-        <div class="progress-bar-fill" id="progressFill"></div>
-      </div>
-      <!-- 테이블 정렬 -->
-      <div class="table-sort-bar">
-        <label>정렬:</label>
-        <select id="tableSortSelect" onchange="sortOrderTable(this.value)">
-          <option value="default"># 순서 (기본)</option>
-          <option value="option">옵션기준 (색상+사이즈)</option>
-        </select>
-      </div>
-      <!-- 테이블 검색 (이중 필터 — Enter로 실행, AND 조건) -->
-      <div class="table-search-bar">
-        <input type="text" id="tableSearchInput"
-          placeholder="검색 1 (주문번호, offer_id, 바코드, 색상, 사이즈...)"
-          onkeydown="if(event.key==='Enter') applyTableFilter()">
-        <input type="text" id="tableSearchInput2"
-          placeholder="검색 2 (추가 필터)"
-          onkeydown="if(event.key==='Enter') applyTableFilter()">
-        <span class="table-search-count" id="tableSearchCount"></span>
-        <button class="table-search-clear" onclick="clearTableSearch()" title="검색 초기화">✕</button>
-      </div>
-      <div id="orderListContent">
-        <div class="empty-message">데이터를 입력하고 저장 버튼을 클릭하세요</div>
-      </div>
-    </div>
-    <!-- 테이블 하단 여백: 검색 시 결과가 위쪽에 있어도 스크롤 위치 유지 -->
-    <div style="height: 300px;"></div>
+    <!-- 주문 목록 영역은 공유: .tab-content-wrapper 하단의 sharedOrderList 참고 -->
 
       </div><!-- /tab-order -->
 
@@ -1615,21 +1579,7 @@
             <button class="btn-step" id="btnAddV2" onclick="addFromCartV2()" disabled>추가</button>
           </div>
         </div>
-
-        <div class="order-list">
-          <h3>
-            <span>주문 목록 <span id="orderCountV2"></span></span>
-            <div class="order-list-header-buttons">
-              <button class="btn-export btn-export-gray" onclick="openLinkEditModal()">링크수정</button>
-              <button class="btn-export btn-export-gray" onclick="applyAllCartData()">일괄 적용</button>
-              <button class="btn-export btn-export-blue" onclick="markCheckedComplete()">검수-완료</button>
-            </div>
-          </h3>
-          <div id="orderListContentV2">
-            <div class="empty-message">사용자 선택 → 주문 선택 → [추가] 버튼을 클릭하세요</div>
-          </div>
-        </div>
-        <div style="height: 300px;"></div>
+        <!-- 주문 목록 영역은 공유: .tab-content-wrapper 하단의 sharedOrderList 참고 -->
       </div><!-- /tab-orderV2 -->
 
       <!-- ─── 문의 탭 ─── -->
@@ -1654,6 +1604,45 @@
         </div>
         <div style="height: 300px;"></div>
       </div><!-- /tab-inquiry -->
+
+      <!-- ─── 공유 주문 목록 영역 (주문/V2 주문 탭에서 공통 사용) ─── -->
+      <div class="order-list" id="sharedOrderList">
+        <h3>
+          <span>주문 목록 <span id="orderCount"></span></span>
+          <div class="order-list-header-buttons">
+            <button class="btn-export btn-export-gray" onclick="openLinkEditModal()">링크수정</button>
+            <button class="btn-export btn-export-gray" onclick="applyAllCartData()">일괄 적용</button>
+            <button class="btn-export btn-export-blue" onclick="markCheckedComplete()">검수-완료</button>
+          </div>
+        </h3>
+        <div class="progress-bar" id="progressBar" style="display: none;">
+          <div class="progress-bar-fill" id="progressFill"></div>
+        </div>
+        <!-- 테이블 정렬 -->
+        <div class="table-sort-bar">
+          <label>정렬:</label>
+          <select id="tableSortSelect" onchange="sortOrderTable(this.value)">
+            <option value="default"># 순서 (기본)</option>
+            <option value="option">옵션기준 (색상+사이즈)</option>
+          </select>
+        </div>
+        <!-- 테이블 검색 (이중 필터 — Enter로 실행, AND 조건) -->
+        <div class="table-search-bar">
+          <input type="text" id="tableSearchInput"
+            placeholder="검색 1 (주문번호, offer_id, 바코드, 색상, 사이즈...)"
+            onkeydown="if(event.key==='Enter') applyTableFilter()">
+          <input type="text" id="tableSearchInput2"
+            placeholder="검색 2 (추가 필터)"
+            onkeydown="if(event.key==='Enter') applyTableFilter()">
+          <span class="table-search-count" id="tableSearchCount"></span>
+          <button class="table-search-clear" onclick="clearTableSearch()" title="검색 초기화">✕</button>
+        </div>
+        <div id="orderListContent">
+          <div class="empty-message">데이터를 입력하고 저장 버튼을 클릭하세요</div>
+        </div>
+      </div>
+      <!-- 테이블 하단 여백: 검색 시 결과가 위쪽에 있어도 스크롤 위치 유지 -->
+      <div id="sharedOrderListSpacer" style="height: 300px;"></div>
 
       </div><!-- /tab-content-wrapper -->
     </div><!-- /main-layout -->
