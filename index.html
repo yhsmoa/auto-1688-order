@@ -1535,10 +1535,16 @@
         <h3 style="margin: 0;">구글 시트 데이터 입력</h3>
       </div>
       <p>구글 시트에서 전체 행을 복사해서 붙여넣기 하세요 (A~L열 모두 포함)</p>
-      <!-- 필요한 열 안내 + '추가' 버튼 (입력폼 우측 상단) -->
+      <!-- 필요한 열 안내 + 자동 생성 토글 + '추가' 버튼 (입력폼 우측 상단) -->
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
         <p style="font-size: 11px; color: #666; margin: 0;">필요한 열: B(주문번호), E(수량), G(색상), H(사이즈), L(URL)</p>
-        <button class="btn-step" id="btnSave" onclick="parseData()" disabled>추가</button>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <label style="display:flex; align-items:center; gap:4px; font-size:12px; color:#333; cursor:pointer;">
+            <input type="checkbox" id="autoGenOrderNo" checked>
+            주문번호 생성
+          </label>
+          <button class="btn-step" id="btnSave" onclick="parseData()" disabled>추가</button>
+        </div>
       </div>
       <textarea id="dataInput" placeholder="먼저 위에서 사용자를 선택해주세요" disabled style="opacity: 0.5;"></textarea>
 
@@ -1570,13 +1576,12 @@
             <h3 style="margin:0;">장바구니 불러오기</h3>
           </div>
           <p style="font-size:11px; color:#666; margin:0 0 10px 0;">
-            사용자가 1688 장바구니에 미리 담아둔 주문(ft_orders.status=NEW)을 선택해 불러옵니다
+            사용자의 ft_carts(status='ORDER') 목록입니다. 카트를 선택하면 즉시 주문 목록에 적재됩니다.
           </p>
           <div style="display:flex; align-items:center; gap:10px;">
             <select id="ftOrderSelectV2" style="flex:1; padding:8px; font-size:13px;">
               <option value="">사용자를 먼저 선택하세요</option>
             </select>
-            <button class="btn-step" id="btnAddV2" onclick="addFromCartV2()" disabled>추가</button>
           </div>
         </div>
         <!-- 주문 목록 영역은 공유: .tab-content-wrapper 하단의 sharedOrderList 참고 -->

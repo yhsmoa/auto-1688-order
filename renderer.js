@@ -159,8 +159,8 @@ function switchTab(tabName) {
   } else if (tabName === 'orderV2') {
     document.getElementById('tab-orderV2').classList.add('active');
     document.getElementById('sideOrderV2').classList.add('active');
-    // 진입 시 드롭박스 새로고침
-    loadFtOrdersDropdown();
+    // 진입 시 드롭박스 새로고침 (ft_carts.status='ORDER' 목록)
+    loadFtCartsDropdown();
   } else if (tabName === 'inquiry') {
     document.getElementById('tab-inquiry').classList.add('active');
     document.getElementById('sideInquiry').classList.add('active');
@@ -792,7 +792,7 @@ function populateFtUserSelect() {
   select.addEventListener('change', () => {
     updateDataInputState();
     applyUserCodeButtonVisibility();
-    if (typeof loadFtOrdersDropdown === 'function') loadFtOrdersDropdown();
+    if (typeof loadFtCartsDropdown === 'function') loadFtCartsDropdown();
   });
 }
 
@@ -1009,6 +1009,52 @@ async function parseData() {
   // 누적 모드: 기존 orders는 유지하고 새 데이터를 push
   const newOrders = [];
 
+  // ─── 【주문 탭】 자동 생성 모드 사전 준비 ─────────────────────
+  // 체크박스('주문번호 생성') 체크 상태이면 V2 주문 탭과 동일한 헬퍼로
+  //   - order_no (이번 추가 작업 전체 공유)
+  //   - item_seq (오늘·동일 user 의 max + 1 부터 누적)
+  //   - item_no  (각 정상 행마다 generateItemNo)
+  // 을 자동 생성. 체크 해제 시 시트 B/S열 값을 그대로 사용 (기존 동작).
+  const autoGen = document.getElementById('autoGenOrderNo')?.checked ?? true;
+  let autoUserCode = '', autoOrderNo = '', autoBaseSeq = 0;
+  if (autoGen) {
+    const ftUserSelect = document.getElementById('ftUserSelect');
+    const userId = ftUserSelect?.value || '';
+    autoUserCode = ftUserSelect?.selectedOptions[0]?.dataset.userCode || '';
+    if (!userId || !autoUserCode) {
+      alert('자동 생성 모드: 사용자(user_code) 가 선택돼 있어야 합니다.\n체크박스를 해제하거나 사용자를 먼저 선택해주세요.');
+      return;
+    }
+    autoOrderNo = generateOrderNo(autoUserCode);
+    autoBaseSeq = await getItemSeqBase(userId);
+
+    // ─ Y(set_total) / Z(set_seq) 사전 검증 (자동 모드 전용) ─
+    // 누락된 행이 하나라도 있으면 즉시 에러 → 전체 추가 중단.
+    // (행 단위 무효 처리가 아니라 사용자에게 hard 에러로 알림)
+    const ztErrors = [];
+    for (let i = 0; i < lines.length; i++) {
+      const lp = lines[i].split('\t');
+      const t = lp[24] ? lp[24].trim() : '';
+      const s = lp[25] ? lp[25].trim() : '';
+      const tBad = (t === '' || isNaN(parseInt(t)));
+      const sBad = (s === '' || isNaN(parseInt(s)));
+      if (tBad || sBad) {
+        const miss = [];
+        if (tBad) miss.push('Y(set_total)');
+        if (sBad) miss.push('Z(set_seq)');
+        ztErrors.push(`${i + 1}행: ${miss.join(', ')} 누락/형식 오류`);
+      }
+    }
+    if (ztErrors.length > 0) {
+      const head = '【자동 생성 모드】 set_total(Y) / set_seq(Z) 는 필수입니다.\n';
+      const body = ztErrors.slice(0, 10).join('\n');
+      const tail = ztErrors.length > 10 ? `\n…외 ${ztErrors.length - 10}개 행` : '';
+      alert(head + '\n' + body + tail + '\n\n추가가 중단되었습니다. 시트를 확인 후 다시 시도해주세요.');
+      return;
+    }
+  }
+  let autoSeqCursor = autoBaseSeq; // 정상 행 push 시마다 +1 (무효 행은 건너뜀)
+
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx];
     // 탭으로 구분 (구글 시트에서 복사하면 탭으로 구분됨)
@@ -1036,12 +1082,15 @@ async function parseData() {
     const { cleanedUrl: url, offerId } = processUrl(parts[11].trim());
 
     // 필수 필드 누락 → 무효 행으로 추가
-    if (!orderNo || !color || !size || !url) {
+    //  ※ 자동 생성 모드(autoGen)에서는 B열(주문번호) 가 비어있어도 OK (자동값으로 채워짐)
+    //  ※ Y/Z 누락은 사전 검증(parseData 진입부)에서 alert 로 중단 처리하므로 여기 안 옴
+    const orderNoMissing = !autoGen && !orderNo;
+    if (orderNoMissing || !color || !size || !url) {
       const missing = [];
-      if (!orderNo) missing.push('주문번호(B)');
-      if (!color)   missing.push('색상(G)');
-      if (!size)    missing.push('사이즈(H)');
-      if (!url)     missing.push('URL(L)');
+      if (orderNoMissing) missing.push('주문번호(B)');
+      if (!color)         missing.push('색상(G)');
+      if (!size)          missing.push('사이즈(H)');
+      if (!url)           missing.push('URL(L)');
       newOrders.push({
         orderNo: '주문 데이터를 확인해주세요',
         quantity, color, size, url,
@@ -1064,15 +1113,28 @@ async function parseData() {
       continue;
     }
 
+    // ─── 정상 행: 자동 생성 모드면 B/S 열 값을 생성값으로 대체 ───
+    let rowOrderNo   = orderNo;                                  // 기본: 시트 B열
+    let rowOrderCode = parts[18] ? parts[18].trim() : '';        // 기본: 시트 S열
+    let computedItemSeq = null;
+    if (autoGen) {
+      autoSeqCursor += 1;
+      computedItemSeq = autoSeqCursor;
+      const setTotal = parts[24] ? parseInt(parts[24]) : null;
+      const setSeq   = parts[25] ? parseInt(parts[25]) : null;
+      rowOrderNo   = generateItemNo(autoUserCode, computedItemSeq, setTotal, setSeq);
+      rowOrderCode = autoOrderNo;
+    }
+
     // 정상 행
     newOrders.push({
       // 화면 표시용 (기존 필드 유지)
-      orderNo,          // B열
-      quantity,         // E열
-      color,            // G열
-      size,             // H열
-      url,              // L열
-      orderCode: parts[18] ? parts[18].trim() : '',  // S열
+      orderNo: rowOrderNo,    // B열 (자동 모드: 생성된 item_no)
+      quantity,               // E열
+      color,                  // G열
+      size,                   // H열
+      url,                    // L열
+      orderCode: rowOrderCode,// S열 (자동 모드: 생성된 order_no)
       status: 'pending',
       errorReason: '',
 
@@ -1080,7 +1142,7 @@ async function parseData() {
       dbData: {
         date: new Date().toISOString(),                             // 현재 시간 자동 입력
         raw_date: parts[0] ? parts[0].trim() : null,               // A열 (MMDD)
-        order_number: parts[1] ? parts[1].trim() : null,            // B열
+        order_number: rowOrderNo,                                   // B열 (자동 모드: 생성된 item_no)
         item_name: parts[2] ? parts[2].trim() : null,               // C열
         option_name: parts[3] ? parts[3].trim() : null,             // D열
         order_qty: parseInt(parts[4]) || null,                      // E열
@@ -1097,7 +1159,7 @@ async function parseData() {
         status_export: parts[15] ? parseInt(parts[15]) : null,      // P열
         korea_note: parts[16] ? parts[16].trim() : null,            // Q열
         china_note: parts[17] ? parts[17].trim() : null,            // R열
-        order_code: parts[18] ? parts[18].trim() : null,            // S열
+        order_code: rowOrderCode || null,                           // S열 (자동 모드: 생성된 order_no)
         shipment_code: parts[19] ? parts[19].trim() : null,         // T열
         option_id: parts[20] ? parts[20].trim() : null,             // U열
         coupang_shipment_size: parts[21] ? parts[21].trim() : null, // V열
@@ -1106,7 +1168,9 @@ async function parseData() {
         set_total: parts[24] ? parseInt(parts[24]) : null,          // Y열
         set_seq: parts[25] ? parseInt(parts[25]) : null,            // Z열
         '1688_offer_id': offerId,                                   // URL에서 추출
-        '1688_order_id': null                                       // 나중에 매칭 시 추가
+        '1688_order_id': null,                                      // 나중에 매칭 시 추가
+        // 【주문 탭 자동 생성 모드】 V2 저장 시 ft_order_items.item_seq 누적값으로 사용
+        ...(computedItemSeq != null && { _computed_item_seq: computedItemSeq })
       },
 
       // 원본 구글 시트 데이터 전체 저장 (기존 로직 호환)
@@ -1210,113 +1274,123 @@ async function parseData() {
 }
 
 // ════════════════════════════════════════════════════════════
-// V2 주문 탭 — 장바구니 불러오기 (ft_orders / ft_order_items 에서 직접 적재)
+// 【V2 주문 탭 전용】 ft_carts / ft_cart_items 기반 장바구니 불러오기
+// ────────────────────────────────────────────────────────────
+//  ★ 호출처 구분 ★
+//  - loadFtCartsDropdown        : V2 주문 탭 진입 / 사용자 변경 시 호출
+//  - handleCartSelect           : 드롭박스 onchange 즉시 호출 (추가 버튼 없음)
+//  - reconstructOrderFromCartItem: ft_cart_items 행 → orders[] 객체로 변환
+//  - generateOrderNo/ItemNo, getItemSeqBase, mapCartSeqToItemSeq: 생성 규칙 헬퍼
+//
+//  ▸ V2 저장 흐름과의 관계:
+//     1) 사용자가 V2 주문 탭에서 카트를 고르면 위 함수들이 orders[] 를 채움.
+//     2) 각 order 의 dbData 에 order_code(=order_no), order_number(=item_no),
+//        _computed_item_seq, _cartId 가 미리 세팅됨.
+//     3) 사용자가 [V2 저장] 클릭 → saveToSupabaseV2() 가 그 값을 그대로
+//        ft_orders / ft_order_items 에 INSERT (주문 탭과 동일한 INSERT 흐름).
+//     4) INSERT 성공 후 _cartId 가 있으면 ft_carts.status = 'DONE' UPDATE.
 // ════════════════════════════════════════════════════════════
 
-// 드롭박스 채우기: 선택된 사용자의 ft_orders.status='NEW' 행들의 order_no
-async function loadFtOrdersDropdown() {
-  const sel = document.getElementById('ftOrderSelectV2');
-  const btn = document.getElementById('btnAddV2');
-  if (!sel || !btn) return;
+// ─── 생성 규칙 헬퍼 ────────────────────────────────────────────
 
-  const ftUserSelect = document.getElementById('ftUserSelect');
-  const userId = ftUserSelect?.value || '';
-
-  sel.innerHTML = '';
-  btn.disabled = true;
-
-  if (!userId) {
-    sel.innerHTML = '<option value="">사용자를 먼저 선택하세요</option>';
-    return;
-  }
-  if (!supabaseClient) {
-    sel.innerHTML = '<option value="">Supabase 초기화 안됨</option>';
-    return;
-  }
-
-  // 1) ft_orders 행 자체 조회
-  const { data, error } = await supabaseClient
-    .from('ft_orders')
-    .select('id, order_no, total_qty, created_at')
-    .eq('user_id', userId)
-    .eq('status', 'NEW')
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.error('ft_orders 조회 실패:', error);
-    sel.innerHTML = '<option value="">조회 실패</option>';
-    return;
-  }
-  if (!data || data.length === 0) {
-    sel.innerHTML = '<option value="">NEW 상태 주문 없음</option>';
-    return;
-  }
-
-  // 2) ft_order_items 에서 order_id 별 행 수 집계 (FK 없이도 동작)
-  //    ft_orders.total_qty 는 NEW 상태에서 비어있는 경우가 많아서 실제 아이템 수로 표시.
-  const orderIds = data.map(r => r.id);
-  const countMap = new Map();
-  try {
-    const { data: items, error: itemsErr } = await supabaseClient
-      .from('ft_order_items')
-      .select('order_id')
-      .in('order_id', orderIds);
-    if (itemsErr) throw itemsErr;
-    (items || []).forEach(it => {
-      countMap.set(it.order_id, (countMap.get(it.order_id) || 0) + 1);
-    });
-  } catch (e) {
-    console.warn('ft_order_items 건수 조회 실패, total_qty 로 표시:', e);
-  }
-
-  sel.innerHTML = '<option value="">선택...</option>';
-  data.forEach(row => {
-    const itemCount = countMap.get(row.id) ?? row.total_qty ?? 0;
-    const opt = document.createElement('option');
-    opt.value = row.id;
-    opt.dataset.orderNo = row.order_no;
-    opt.textContent = `${row.order_no} (${itemCount}건)`;
-    sel.appendChild(opt);
-  });
-
-  sel.onchange = () => { btn.disabled = !sel.value; };
+// order_no 생성: 'OR' + user_code + YYMMDD + '-' + 시간알파벳 + 분(2자리)
+// 시간알파벳: 0시=A, 1시=B, …, 13시=N, …, 23시=X
+// 예: user_code='BO', 13:31 → ORBO260608-N31
+function generateOrderNo(userCode) {
+  const d = new Date();
+  const yy = String(d.getFullYear()).slice(-2);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hourLetter = String.fromCharCode(65 + d.getHours());
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `OR${userCode}${yy}${mm}${dd}-${hourLetter}${min}`;
 }
 
-// shipment 역매핑: ft_order_items 의 shipment_type/coupang_shipment_size/personal_order_no
-// → 시트 V열 원본 형태로 복원
+// item_no 생성: user_code + '-' + YYMMDD + '-' + item_seq(4자리) + '-' + suffix
+//  suffix 규칙:
+//    - 단품 (set_total <= 1 또는 null): 'A0' + set_seq  (예: A01)
+//    - 세트 (set_total >  1)          : 'S' + set_total + set_seq (예: S21, S22)
+// 예: BO-260608-0028-A01
+function generateItemNo(userCode, itemSeq, setTotal, setSeq) {
+  const d = new Date();
+  const yymmdd = `${String(d.getFullYear()).slice(-2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  const seqStr = String(itemSeq).padStart(4, '0');
+  const total = setTotal || 0;
+  const seq = setSeq || 1;
+  const suffix = total > 1 ? `S${total}${seq}` : `A0${seq}`;
+  return `${userCode}-${yymmdd}-${seqStr}-${suffix}`;
+}
+
+// 오늘 날짜(YYYY-MM-DD)에 해당 user_id 의 ft_order_items.item_seq 중 max 값을 가져옴.
+// 없으면 0 → 첫 item_seq 가 1 부터 시작.
+async function getItemSeqBase(userId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data, error } = await supabaseClient
+    .from('ft_order_items')
+    .select('item_seq')
+    .eq('user_id', userId)
+    .eq('requested_date', today)
+    .order('item_seq', { ascending: false })
+    .limit(1);
+  if (error) {
+    console.warn('item_seq base 조회 실패 → 0 으로 fallback:', error);
+    return 0;
+  }
+  if (!data || data.length === 0) return 0;
+  return data[0].item_seq || 0;
+}
+
+// cart_seq → item_seq 매핑. 같은 cart_seq 는 같은 item_seq.
+// cartItems 는 cart_seq 오름차순 정렬되어 있다고 가정.
+function mapCartSeqToItemSeq(cartItems, base) {
+  const map = new Map();
+  let next = base;
+  for (const it of cartItems) {
+    if (!map.has(it.cart_seq)) {
+      next += 1;
+      map.set(it.cart_seq, next);
+    }
+  }
+  return map;
+}
+
+// shipment 역매핑: ft_cart_items 의 shipment_type/coupang_shipment_size/personal_order_no
+// → 시트 V열 원본 형태로 복원 (ft_order_items 와 동일 패턴 — cart 도 같은 컬럼 구조)
 function vReverseFromShipment(it) {
   if (it.shipment_type === 'PERSONAL') return `P-${it.personal_order_no || ''}`;
   if (it.shipment_type === 'DIRECT')   return 'DIRECT';
   return it.coupang_shipment_size || ''; // COUPANG 또는 미설정
 }
 
-// ft_order_items 행 → parseData 출력과 동일한 order 객체로 역매핑
-function reconstructOrderFromFtItem(it) {
-  // requested_date(YYYY-MM-DD) → MMDD 역변환
-  const rawDateMMDD = (() => {
-    const d = it.requested_date || '';
-    const m = d.match(/^\d{4}-(\d{2})-(\d{2})$/);
-    return m ? `${m[1]}${m[2]}` : null;
-  })();
+// ─── ft_cart_items 행 → orders[] 객체 변환 ─────────────────────
+// 【V2 주문 탭 전용】 parseData 가 만드는 order 구조와 동일한 출력을 만든다.
+// 입력 ctx: { userCode, orderNo, itemSeq, cartId }
+function reconstructOrderFromCartItem(it, ctx) {
+  const { userCode, orderNo, itemSeq, cartId } = ctx;
 
-  // site_url 에서 offer_id 직접 추출 — parseData 와 동일하게 processUrl 재사용.
-  // ft_order_items.1688_offer_id 컬럼이 비어있는 데이터도 표시/저장 가능.
-  const { cleanedUrl, offerId: extractedOfferId } = processUrl(it.site_url || '');
-  const offerId = extractedOfferId || it['1688_offer_id'] || null;
+  // site_url 에서 offer_id 직접 추출
+  const { cleanedUrl, offerId } = processUrl(it.site_url || '');
+
+  // 오늘 MMDD (parseData 의 raw_date 형식과 동일)
+  const now = new Date();
+  const rawDateMMDD = `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+
+  // item_no 생성 (행 단위 고유)
+  const itemNo = generateItemNo(userCode, itemSeq, it.set_total, it.set_seq);
 
   return {
-    orderNo: it.item_no || '',
+    orderNo: itemNo,                      // 화면 표시용 (= item_no)
     quantity: it.order_qty || 0,
     color: it.china_option1 || '',
     size: it.china_option2 || '',
     url: cleanedUrl,
-    orderCode: it.order_no || '',
+    orderCode: orderNo,                   // 카트 전체 공유 (= order_no)
     status: 'pending',
     errorReason: '',
     dbData: {
       date: new Date().toISOString(),
       raw_date: rawDateMMDD,
-      order_number: it.item_no || null,
+      order_number: itemNo,               // → ft_order_items.item_no
       item_name: it.item_name || null,
       option_name: it.option_name || null,
       order_qty: it.order_qty || null,
@@ -1332,8 +1406,8 @@ function reconstructOrderFromFtItem(it) {
       status_cancel: null,
       status_export: null,
       korea_note: it.note_kr || null,
-      china_note: it.note_cn || null,
-      order_code: it.order_no || null,
+      china_note: it.req_note || null,    // req_note → R열 매핑 (가정)
+      order_code: orderNo,                // → ft_order_items.order_no / ft_orders.order_no
       shipment_code: null,
       option_id: it.vendor_option_id || null,
       coupang_shipment_size: vReverseFromShipment(it),
@@ -1342,44 +1416,143 @@ function reconstructOrderFromFtItem(it) {
       set_total: it.set_total || null,
       set_seq: it.set_seq || null,
       '1688_offer_id': offerId,
-      '1688_order_id': it['1688_order_id'] || null,
+      '1688_order_id': null,
+      // ── V2 주문 탭 전용 내부 마커 (saveToSupabaseV2 가 참고) ──
+      _computed_item_seq: itemSeq,        // → ft_order_items.item_seq (누적값)
+      _cartId: cartId,                    // → V2 저장 성공 후 ft_carts.status='DONE'
     },
     originalData: []
   };
 }
 
-// [추가] 버튼: 선택된 ft_orders.id 의 ft_order_items 를 fetch 해 orders[] 에 적재
-async function addFromCartV2() {
+// ─── 드롭박스 채우기 ───────────────────────────────────────────
+// 【V2 주문 탭 전용】 선택된 사용자의 ft_carts.status='ORDER' 행들을 드롭박스에 노출.
+//  옵션 value = ft_carts.id, 라벨 = cart_name + 아이템 건수.
+async function loadFtCartsDropdown() {
   const sel = document.getElementById('ftOrderSelectV2');
-  const ftOrderId = sel?.value;
-  if (!ftOrderId) {
-    alert('주문(order_no)을 먼저 선택하세요.');
+  if (!sel) return;
+
+  const ftUserSelect = document.getElementById('ftUserSelect');
+  const userId = ftUserSelect?.value || '';
+
+  sel.innerHTML = '';
+
+  if (!userId) {
+    sel.innerHTML = '<option value="">사용자를 먼저 선택하세요</option>';
     return;
   }
+  if (!supabaseClient) {
+    sel.innerHTML = '<option value="">Supabase 초기화 안됨</option>';
+    return;
+  }
+
+  // 1) ft_carts 조회 (user_id + status='ORDER')
+  const { data, error } = await supabaseClient
+    .from('ft_carts')
+    .select('id, cart_name, created_at')
+    .eq('user_id', userId)
+    .eq('status', 'ORDER')
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('ft_carts 조회 실패:', error);
+    sel.innerHTML = '<option value="">조회 실패</option>';
+    return;
+  }
+  if (!data || data.length === 0) {
+    sel.innerHTML = '<option value="">ORDER 상태 카트 없음</option>';
+    return;
+  }
+
+  // 2) cart_id 별 ft_cart_items 행 수 집계 (한 번에 조회)
+  const cartIds = data.map(r => r.id);
+  const countMap = new Map();
+  try {
+    const { data: items, error: itemsErr } = await supabaseClient
+      .from('ft_cart_items')
+      .select('cart_id')
+      .in('cart_id', cartIds);
+    if (itemsErr) throw itemsErr;
+    (items || []).forEach(it => {
+      countMap.set(it.cart_id, (countMap.get(it.cart_id) || 0) + 1);
+    });
+  } catch (e) {
+    console.warn('ft_cart_items 건수 조회 실패:', e);
+  }
+
+  sel.innerHTML = '<option value="">선택...</option>';
+  data.forEach(row => {
+    const itemCount = countMap.get(row.id) ?? 0;
+    const opt = document.createElement('option');
+    opt.value = row.id;
+    opt.dataset.cartName = row.cart_name || '';
+    opt.textContent = `${row.cart_name || '(이름 없음)'} (${itemCount}건)`;
+    sel.appendChild(opt);
+  });
+
+  // 선택 즉시 적재 — onchange 에 핸들러 바인딩 (추가 버튼 없음)
+  sel.onchange = handleCartSelect;
+}
+
+// ─── 드롭박스 선택 시 즉시 적재 ────────────────────────────────
+// 【V2 주문 탭 전용】 드롭박스 onchange 핸들러.
+//  ft_cart_items 조회 → order_no/item_seq/item_no 생성 → orders[] push → 화면 렌더.
+async function handleCartSelect() {
+  const sel = document.getElementById('ftOrderSelectV2');
+  const cartId = sel?.value;
+  if (!cartId) return;
   if (!supabaseClient) {
     alert('Supabase 초기화 안됨');
     return;
   }
 
+  // ─ user_id / user_code 확보 ─
+  const ftUserSelect = document.getElementById('ftUserSelect');
+  const userId = ftUserSelect?.value || '';
+  const userCode = ftUserSelect?.selectedOptions[0]?.dataset.userCode || '';
+  if (!userId) {
+    alert('사용자를 먼저 선택하세요.');
+    return;
+  }
+  if (!userCode) {
+    alert('선택된 사용자의 user_code 가 비어있습니다.');
+    return;
+  }
+
+  // 1) ft_cart_items 조회 (cart_seq 오름차순)
   const { data: items, error } = await supabaseClient
-    .from('ft_order_items')
+    .from('ft_cart_items')
     .select('*')
-    .eq('order_id', ftOrderId)
-    .order('item_seq', { ascending: true });
+    .eq('cart_id', cartId)
+    .order('cart_seq', { ascending: true });
 
   if (error) {
-    console.error('ft_order_items 조회 실패:', error);
-    alert(`ft_order_items 조회 실패: ${error.message}`);
+    console.error('ft_cart_items 조회 실패:', error);
+    alert(`ft_cart_items 조회 실패: ${error.message}`);
     return;
   }
   if (!items || items.length === 0) {
-    alert('해당 주문에 아이템이 없습니다.');
+    alert('해당 카트에 아이템이 없습니다.');
     return;
   }
 
-  const newOrders = items.map(it => reconstructOrderFromFtItem(it));
+  // 2) order_no 한 번 생성 (카트 전체 공유)
+  const orderNo = generateOrderNo(userCode);
+
+  // 3) item_seq base 조회 + cart_seq → item_seq 매핑
+  const base = await getItemSeqBase(userId);
+  const seqMap = mapCartSeqToItemSeq(items, base);
+
+  // 4) 각 행을 order 객체로 변환 → orders[] 누적
+  const newOrders = items.map(it => reconstructOrderFromCartItem(it, {
+    userCode,
+    orderNo,
+    itemSeq: seqMap.get(it.cart_seq),
+    cartId,
+  }));
   orders.push(...newOrders);
 
+  // 5) 후처리 (parseData / 기존 addFromCartV2 와 동일 흐름)
   isDataSaved = false;
   renderDataPreview();
   renderOrderList();
@@ -1392,14 +1565,12 @@ async function addFromCartV2() {
   stepStatus.parse = true;
   updateButtonSteps();
 
-  // 사용 완료된 옵션 드롭박스에서 제거
-  const usedOpt = sel.querySelector(`option[value="${ftOrderId}"]`);
+  // 6) 사용 완료된 옵션 드롭박스에서 제거 + 선택 초기화
+  const usedOpt = sel.querySelector(`option[value="${cartId}"]`);
   if (usedOpt) usedOpt.remove();
   sel.value = '';
-  const btnAdd = document.getElementById('btnAddV2');
-  if (btnAdd) btnAdd.disabled = true;
 
-  alert(`${newOrders.length}건 추가됨 (총 ${orders.length}건)`);
+  alert(`${newOrders.length}건 추가됨 (총 ${orders.length}건)\norder_no: ${orderNo}\nitem_seq: ${base + 1} ~ ${base + seqMap.size}`);
 }
 
 // Supabase 컬럼 매핑 (인덱스 -> 컬럼명)
@@ -4500,7 +4671,9 @@ async function saveToSupabaseV2() {
       return {
         order_id: ftOrderId,
         order_no: db.order_code || orderCode,
-        item_seq: index + 1,
+        // 【V2 주문 탭】 미리 누적 계산한 _computed_item_seq 우선
+        // 【주문 탭】     기존 fallback (index + 1)
+        item_seq: db._computed_item_seq ?? (index + 1),
         item_name: db.item_name || null,
         option_name: db.option_name || null,
         order_qty: db.order_qty || null,
@@ -4570,6 +4743,23 @@ async function saveToSupabaseV2() {
 
     const savedItemCount = verifyItems ? verifyItems.length : 0;
     console.log(`✓ V2 저장 검증 완료: ft_orders 1건, ft_order_items ${savedItemCount}건`);
+
+    // ── 【V2 주문 탭 전용】 cart 출처면 ft_carts.status = 'DONE' UPDATE ──
+    // _cartId 마커가 있는 주문은 ft_carts 에서 불러온 것. INSERT 성공 후 cart 행을 DONE 으로 마킹.
+    // 주문 탭(시트 입력)에서 호출된 경우 _cartId 가 없으므로 이 블록은 no-op.
+    const cartIdToFinalize = orders[0]?.dbData?._cartId;
+    if (cartIdToFinalize) {
+      const { error: cartUpdateError } = await supabaseClient
+        .from('ft_carts')
+        .update({ status: 'DONE' })
+        .eq('id', cartIdToFinalize);
+      if (cartUpdateError) {
+        console.error('ft_carts status UPDATE 실패:', cartUpdateError);
+        alert(`ft_orders/ft_order_items 저장은 완료됐으나 ft_carts.status='DONE' 갱신 실패: ${cartUpdateError.message}`);
+      } else {
+        console.log(`✓ ft_carts(${cartIdToFinalize}).status → 'DONE'`);
+      }
+    }
 
     alert(`V2 저장 완료!\n\n주문코드: ${orderCode}\nft_orders ID: ${ftOrderId}\n총 ${orders.length}건 중 ${successOrders.length}건 성공 데이터 저장\n총 수량: ${totalQty}`);
 
