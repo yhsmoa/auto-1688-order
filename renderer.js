@@ -960,6 +960,20 @@ function exitWithoutSave() {
   }
 }
 
+// 앱 재시작 — Electron 메인 프로세스에 종료+재실행 요청
+//  현재 작업/창 상태를 모두 버리고 "닫고 새로 연 것" 과 동일한 상태로 복귀.
+function restartApp() {
+  if (!confirm('앱을 재시작하시겠습니까?\n저장하지 않은 데이터는 사라집니다.')) {
+    return;
+  }
+  if (window.api && window.api.restartApp) {
+    window.api.restartApp();
+  } else {
+    // fallback (Electron 환경이 아닐 경우)
+    location.reload();
+  }
+}
+
 // 대기 중인 액션 실행
 function executePendingAction() {
   if (pendingAction === 'refresh') {
@@ -1524,7 +1538,11 @@ async function handleCartSelect() {
     .from('ft_cart_items')
     .select('*')
     .eq('cart_id', cartId)
-    .order('cart_seq', { ascending: true });
+    // 정렬: cart_seq → set_seq 오름차순
+    //  - 같은 cart_seq 안에서 세트 행들이 set_seq 1, 2, 3… 순으로 자연 정렬
+    //  - mapCartSeqToItemSeq 의 그룹핑 가정과도 일치 (cart_seq 가 묶음 키)
+    .order('cart_seq', { ascending: true })
+    .order('set_seq', { ascending: true });
 
   if (error) {
     console.error('ft_cart_items 조회 실패:', error);

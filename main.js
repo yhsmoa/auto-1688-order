@@ -238,3 +238,10 @@ ipcMain.on('close-after-save', () => {
   forceClose = true;
   mainWindow.close();
 });
+
+// 앱 재시작 (종료 후 자동 재실행 — 닫고 새로 연 것과 동일 상태)
+ipcMain.on('restart-app', () => {
+  forceClose = true;       // unsaved-data 체크 우회
+  app.relaunch();          // 종료 직후 새 인스턴스 실행 예약
+  app.exit(0);             // 즉시 종료 (close 이벤트 거치지 않음)
+});

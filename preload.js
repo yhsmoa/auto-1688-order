@@ -16,5 +16,7 @@ contextBridge.exposeInMainWorld('api', {
   onCheckUnsavedData: (callback) => ipcRenderer.on('check-unsaved-data', () => callback()),
   sendUnsavedDataResponse: (hasUnsavedData) => ipcRenderer.send('unsaved-data-response', hasUnsavedData),
   forceClose: () => ipcRenderer.send('force-close'),
-  closeAfterSave: () => ipcRenderer.send('close-after-save')
+  closeAfterSave: () => ipcRenderer.send('close-after-save'),
+  // 앱 재시작 (종료 후 자동 재실행)
+  restartApp: () => ipcRenderer.send('restart-app')
 });

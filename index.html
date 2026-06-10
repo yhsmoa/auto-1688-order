@@ -216,6 +216,32 @@
       overflow-y: auto;
     }
 
+    /* 앱 재시작 wrap — 사이드바 제일 바닥 고정 */
+    .rp-restart-wrap {
+      position: absolute;
+      bottom: 16px;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: center;
+      padding-top: 14px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .btn-restart {
+      padding: 8px 22px;
+      background: #495057;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-restart:hover {
+      background: #343a40;
+    }
+
     /* 탭별 버튼 섹션 */
     .rp-section {
       display: flex;
@@ -1471,6 +1497,11 @@
       </div>
 
     </div><!-- /rpInquiry -->
+
+    <!-- ─── 앱 재시작 (사이드바 제일 바닥, 모든 탭 공통) ─── -->
+    <div class="rp-restart-wrap">
+      <button class="btn-restart" id="btnRestartApp" onclick="restartApp()">재시작</button>
+    </div>
 
   </div><!-- /right-panel -->
 
