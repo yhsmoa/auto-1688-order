@@ -793,6 +793,8 @@ function populateFtUserSelect() {
     updateDataInputState();
     applyUserCodeButtonVisibility();
     if (typeof loadFtCartsDropdown === 'function') loadFtCartsDropdown();
+    // 【V2 주문 탭 세션】 사용자 변경 시 order_no 세션 리셋
+    v2SessionOrderNo = null;
   });
 }
 
@@ -1292,9 +1294,10 @@ async function parseData() {
 // ────────────────────────────────────────────────────────────
 //  ★ 호출처 구분 ★
 //  - loadFtCartsDropdown        : V2 주문 탭 진입 / 사용자 변경 시 호출
-//  - handleCartSelect           : 드롭박스 onchange 즉시 호출 (추가 버튼 없음)
+//  - handleCartSelect           : [추가] 버튼 클릭 시 호출 (드롭박스 onchange 는 단순 토글)
 //  - reconstructOrderFromCartItem: ft_cart_items 행 → orders[] 객체로 변환
 //  - generateOrderNo/ItemNo, getItemSeqBase, mapCartSeqToItemSeq: 생성 규칙 헬퍼
+//  - openCartDeleteModal / closeCartDeleteModal / confirmCartDelete: 카트 삭제 (패스워드 모달)
 //
 //  ▸ V2 저장 흐름과의 관계:
 //     1) 사용자가 V2 주문 탭에서 카트를 고르면 위 함수들이 orders[] 를 채움.
@@ -1304,6 +1307,36 @@ async function parseData() {
 //        ft_orders / ft_order_items 에 INSERT (주문 탭과 동일한 INSERT 흐름).
 //     4) INSERT 성공 후 _cartId 가 있으면 ft_carts.status = 'DONE' UPDATE.
 // ════════════════════════════════════════════════════════════
+
+// ─── V2 주문 탭 세션 상태 ──────────────────────────────────────
+// 한 번의 주문 작업(= 다음 V2 저장 직전까지)이 공유하는 order_no.
+// null → 다음 [추가] 시 새로 생성. 초기화 시점:
+//   - saveToSupabaseV2 성공 후
+//   - ftUserSelect change (사용자 바뀜)
+//   - 페이지 새로고침/재시작
+let v2SessionOrderNo = null;
+
+// 카트 추가 잠금 플래그.
+//   - [주문 진행] / [주문 생략] 이 한 번이라도 실행되면 true.
+//   - V2 저장이 끝나도 잠금 유지 → 다음 묶음은 [재시작] 이후에 시작.
+//   - 잠금 상태에서는 드롭박스/[추가]/[삭제] 모두 disabled.
+let cartAddLocked = false;
+
+// V2 카트 영역 잠금 상태를 DOM 에 동기화하는 헬퍼.
+// 잠금이면 모두 비활성 / 풀려있고 카트가 선택돼 있을 때만 두 버튼 활성.
+function applyCartAreaLock() {
+  const sel    = document.getElementById('ftOrderSelectV2');
+  const btnAdd = document.getElementById('btnCartAdd');
+  const btnDel = document.getElementById('btnCartDelete');
+  if (sel)    sel.disabled    = cartAddLocked;
+  if (btnAdd) btnAdd.disabled = cartAddLocked || !sel?.value;
+  if (btnDel) btnDel.disabled = cartAddLocked || !sel?.value;
+}
+
+function lockCartArea() {
+  cartAddLocked = true;
+  applyCartAreaLock();
+}
 
 // ─── 생성 규칙 헬퍼 ────────────────────────────────────────────
 
@@ -1318,6 +1351,52 @@ function generateOrderNo(userCode) {
   const hourLetter = String.fromCharCode(65 + d.getHours());
   const min = String(d.getMinutes()).padStart(2, '0');
   return `OR${userCode}${yy}${mm}${dd}-${hourLetter}${min}`;
+}
+
+// 분(分) 자리 +1. 60 → 다음 시간 알파벳. X59 다음은 wrap → random suffix 로 보수적 회피.
+function bumpOrderNoByMinute(orderNo) {
+  const m = orderNo.match(/^(.+)-([A-X])(\d{2})$/);
+  if (!m) return `${orderNo}_${Math.floor(Math.random() * 1000)}`;
+  let [, prefix, hourLetter, minStr] = m;
+  let min = parseInt(minStr) + 1;
+  if (min >= 60) {
+    min = 0;
+    const nextChar = String.fromCharCode(hourLetter.charCodeAt(0) + 1);
+    if (nextChar > 'X') {
+      return `${prefix}-${hourLetter}${minStr}_${Math.floor(Math.random() * 1000)}`;
+    }
+    hourLetter = nextChar;
+  }
+  return `${prefix}-${hourLetter}${String(min).padStart(2, '0')}`;
+}
+
+// ft_orders.order_no 중복 1회 조회. 실패하면 false (보수적으로 "없다고 가정" → 진행).
+async function orderNoExists(orderNo) {
+  if (!supabaseClient) return false;
+  const { data, error } = await supabaseClient
+    .from('ft_orders')
+    .select('id')
+    .eq('order_no', orderNo)
+    .limit(1);
+  if (error) {
+    console.warn('[order_no 중복 체크 실패]', error);
+    return false;
+  }
+  return !!(data && data.length > 0);
+}
+
+// 충돌 시 분(分) +1 반복. 최악 60회 시도 후 그대로 반환.
+async function generateUniqueOrderNo(userCode) {
+  let candidate = generateOrderNo(userCode);
+  for (let i = 0; i < 60; i++) {
+    if (!(await orderNoExists(candidate))) {
+      if (i > 0) console.log(`[order_no 자동 보정] ${i}회 충돌 → ${candidate}`);
+      return candidate;
+    }
+    candidate = bumpOrderNoByMinute(candidate);
+  }
+  console.warn('[order_no 중복 체크] 60회 시도 후 충돌 — 그대로 사용:', candidate);
+  return candidate;
 }
 
 // item_no 생성: user_code + '-' + YYMMDD + '-' + item_seq(4자리) + '-' + suffix
@@ -1504,13 +1583,18 @@ async function loadFtCartsDropdown() {
     sel.appendChild(opt);
   });
 
-  // 선택 즉시 적재 — onchange 에 핸들러 바인딩 (추가 버튼 없음)
-  sel.onchange = handleCartSelect;
+  // 선택 시: [추가]/[삭제] 버튼 활성화 토글. 잠금 상태면 disabled 유지.
+  sel.onchange = () => { applyCartAreaLock(); };
+
+  // 새로고침 직후 잠금 상태 즉시 반영 (사용자 변경/탭 진입 직후 안전망)
+  applyCartAreaLock();
 }
 
-// ─── 드롭박스 선택 시 즉시 적재 ────────────────────────────────
-// 【V2 주문 탭 전용】 드롭박스 onchange 핸들러.
+// ─── [추가] 버튼 클릭 시 카트 적재 ─────────────────────────────
+// 【V2 주문 탭 전용】 헤더의 [추가] 버튼 onclick 핸들러.
 //  ft_cart_items 조회 → order_no/item_seq/item_no 생성 → orders[] push → 화면 렌더.
+//  여러 카트를 연속 추가해도 order_no 는 세션 공유 (v2SessionOrderNo).
+//  item_seq base 는 DB max + orders[] 내 max 중 큰 값 → 중복 방지.
 async function handleCartSelect() {
   const sel = document.getElementById('ftOrderSelectV2');
   const cartId = sel?.value;
@@ -1554,11 +1638,21 @@ async function handleCartSelect() {
     return;
   }
 
-  // 2) order_no 한 번 생성 (카트 전체 공유)
-  const orderNo = generateOrderNo(userCode);
+  // 2) order_no — 세션 캐시 사용 (여러 카트 [추가] 시에도 같은 값 공유)
+  //    첫 호출 시 ft_orders 중복 1회 체크 → 충돌 시 분(分) +1 로 빈 자리 확보.
+  //    두 번째 [추가] 부터는 캐시 사용, 재조회 없음.
+  if (!v2SessionOrderNo) {
+    v2SessionOrderNo = await generateUniqueOrderNo(userCode);
+  }
+  const orderNo = v2SessionOrderNo;
 
-  // 3) item_seq base 조회 + cart_seq → item_seq 매핑
-  const base = await getItemSeqBase(userId);
+  // 3) item_seq base — DB max 와 orders[] 내 _computed_item_seq max 중 큰 값
+  //    이미 화면에 적재된 행과 중복되지 않도록 누적 보장.
+  const dbBase = await getItemSeqBase(userId);
+  const ordersMax = orders.reduce(
+    (m, o) => Math.max(m, o.dbData?._computed_item_seq ?? 0), 0
+  );
+  const base = Math.max(dbBase, ordersMax);
   const seqMap = mapCartSeqToItemSeq(items, base);
 
   // 4) 각 행을 order 객체로 변환 → orders[] 누적
@@ -1583,12 +1677,70 @@ async function handleCartSelect() {
   stepStatus.parse = true;
   updateButtonSteps();
 
-  // 6) 사용 완료된 옵션 드롭박스에서 제거 + 선택 초기화
+  // 6) 사용 완료된 옵션 드롭박스에서 제거 + 선택 초기화 + 두 버튼 비활성화
   const usedOpt = sel.querySelector(`option[value="${cartId}"]`);
   if (usedOpt) usedOpt.remove();
   sel.value = '';
+  const btnAdd = document.getElementById('btnCartAdd');
+  const btnDel = document.getElementById('btnCartDelete');
+  if (btnAdd) btnAdd.disabled = true;
+  if (btnDel) btnDel.disabled = true;
 
   alert(`${newOrders.length}건 추가됨 (총 ${orders.length}건)\norder_no: ${orderNo}\nitem_seq: ${base + 1} ~ ${base + seqMap.size}`);
+}
+
+// ─── 카트 삭제 (패스워드 모달) ─────────────────────────────────
+// 【V2 주문 탭 전용】 선택된 ft_carts 행 + 연결된 ft_cart_items 모두 영구 삭제.
+//  실수 방지를 위해 상단 게이트와 동일한 ORDER_PASSWORD 확인 필요.
+
+function openCartDeleteModal() {
+  const sel = document.getElementById('ftOrderSelectV2');
+  if (!sel?.value) {
+    alert('삭제할 카트를 먼저 선택하세요.');
+    return;
+  }
+  const modal = document.getElementById('cartDeleteModal');
+  const input = document.getElementById('cartDeletePwInput');
+  if (input) input.value = '';
+  if (modal) modal.style.display = 'flex';
+  setTimeout(() => input?.focus(), 50);
+}
+
+function closeCartDeleteModal() {
+  const modal = document.getElementById('cartDeleteModal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function confirmCartDelete() {
+  const input = document.getElementById('cartDeletePwInput');
+  const pw = input?.value || '';
+  if (pw !== ORDER_PASSWORD) {
+    alert('패스워드가 일치하지 않습니다.');
+    if (input) { input.value = ''; input.focus(); }
+    return;
+  }
+  const sel = document.getElementById('ftOrderSelectV2');
+  const cartId = sel?.value;
+  if (!cartId) { closeCartDeleteModal(); return; }
+  if (!supabaseClient) { alert('Supabase 초기화 안됨'); return; }
+
+  // ft_cart_items 먼저 삭제 (FK 안전) → ft_carts 행 삭제
+  const { error: itemsErr } = await supabaseClient
+    .from('ft_cart_items').delete().eq('cart_id', cartId);
+  if (itemsErr) {
+    alert(`ft_cart_items 삭제 실패: ${itemsErr.message}`);
+    return;
+  }
+  const { error: cartsErr } = await supabaseClient
+    .from('ft_carts').delete().eq('id', cartId);
+  if (cartsErr) {
+    alert(`ft_carts 삭제 실패: ${cartsErr.message}`);
+    return;
+  }
+
+  closeCartDeleteModal();
+  await loadFtCartsDropdown(); // 드롭박스 새로고침 (삭제된 카트 사라짐)
+  alert('카트가 삭제되었습니다.');
 }
 
 // Supabase 컬럼 매핑 (인덱스 -> 컬럼명)
@@ -2125,6 +2277,8 @@ async function startOrders() {
     alert('주문 목록이 없습니다.');
     return;
   }
+  // 【V2 주문 탭】 진행 시작 시점부터 카트 추가 영역 잠금 → [재시작] 까지 유지
+  lockCartArea();
 
   // 체크된 항목이 있는지 확인
   const checkedOrders = orders.filter(o => o.checked);
@@ -2335,6 +2489,8 @@ function skipOrders() {
     alert('주문 목록이 없습니다.');
     return;
   }
+  // 【V2 주문 탭】 주문 생략도 한 묶음 확정으로 보고 카트 추가 영역 잠금
+  lockCartArea();
 
   // 체크된 항목이 있으면 체크된 것만, 없으면 전체
   const checkedOrders = orders.filter(o => o.checked);
@@ -4762,22 +4918,27 @@ async function saveToSupabaseV2() {
     const savedItemCount = verifyItems ? verifyItems.length : 0;
     console.log(`✓ V2 저장 검증 완료: ft_orders 1건, ft_order_items ${savedItemCount}건`);
 
-    // ── 【V2 주문 탭 전용】 cart 출처면 ft_carts.status = 'DONE' UPDATE ──
-    // _cartId 마커가 있는 주문은 ft_carts 에서 불러온 것. INSERT 성공 후 cart 행을 DONE 으로 마킹.
+    // ── 【V2 주문 탭 전용】 cart 출처 행들의 ft_carts.status = 'DONE' 일괄 UPDATE ──
+    // 한 세션에 여러 카트가 같은 order_no 로 묶여 들어올 수 있으므로 _cartId 전부 수집해 in() 사용.
     // 주문 탭(시트 입력)에서 호출된 경우 _cartId 가 없으므로 이 블록은 no-op.
-    const cartIdToFinalize = orders[0]?.dbData?._cartId;
-    if (cartIdToFinalize) {
+    const cartIdsToFinalize = [...new Set(
+      orders.map(o => o?.dbData?._cartId).filter(Boolean)
+    )];
+    if (cartIdsToFinalize.length > 0) {
       const { error: cartUpdateError } = await supabaseClient
         .from('ft_carts')
         .update({ status: 'DONE' })
-        .eq('id', cartIdToFinalize);
+        .in('id', cartIdsToFinalize);
       if (cartUpdateError) {
         console.error('ft_carts status UPDATE 실패:', cartUpdateError);
         alert(`ft_orders/ft_order_items 저장은 완료됐으나 ft_carts.status='DONE' 갱신 실패: ${cartUpdateError.message}`);
       } else {
-        console.log(`✓ ft_carts(${cartIdToFinalize}).status → 'DONE'`);
+        console.log(`✓ ft_carts(${cartIdsToFinalize.length}개).status → 'DONE'`);
       }
     }
+
+    // 【V2 주문 탭 세션】 V2 저장 성공 → 다음 주문은 새 order_no 로 시작
+    v2SessionOrderNo = null;
 
     alert(`V2 저장 완료!\n\n주문코드: ${orderCode}\nft_orders ID: ${ftOrderId}\n총 ${orders.length}건 중 ${successOrders.length}건 성공 데이터 저장\n총 수량: ${totalQty}`);
 

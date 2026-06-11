@@ -1562,21 +1562,19 @@
       <div class="tab-content active" id="tab-order">
 
     <div class="input-section">
+      <!-- 헤더: H3 좌측 + (자동 생성 토글 + '추가' 버튼) 우측 — V2 주문 탭과 동일 패턴 -->
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
         <h3 style="margin: 0;">구글 시트 데이터 입력</h3>
-      </div>
-      <p>구글 시트에서 전체 행을 복사해서 붙여넣기 하세요 (A~L열 모두 포함)</p>
-      <!-- 필요한 열 안내 + 자동 생성 토글 + '추가' 버튼 (입력폼 우측 상단) -->
-      <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-        <p style="font-size: 11px; color: #666; margin: 0;">필요한 열: B(주문번호), E(수량), G(색상), H(사이즈), L(URL)</p>
         <div style="display:flex; align-items:center; gap:8px;">
           <label style="display:flex; align-items:center; gap:4px; font-size:12px; color:#333; cursor:pointer;">
-            <input type="checkbox" id="autoGenOrderNo" checked>
+            <input type="checkbox" id="autoGenOrderNo">
             주문번호 생성
           </label>
-          <button class="btn-step" id="btnSave" onclick="parseData()" disabled>추가</button>
+          <button class="btn-export btn-export-blue" id="btnSave" onclick="parseData()" disabled>추가</button>
         </div>
       </div>
+      <p style="margin:0 0 6px 0;">구글 시트에서 전체 행을 복사해서 붙여넣기 하세요 (A~L열 모두 포함)</p>
+      <p style="font-size: 11px; color: #666; margin: 0 0 10px 0;">필요한 열: B(주문번호), E(수량), G(색상), H(사이즈), L(URL)</p>
       <textarea id="dataInput" placeholder="먼저 위에서 사용자를 선택해주세요" disabled style="opacity: 0.5;"></textarea>
 
 
@@ -1605,9 +1603,15 @@
         <div class="input-section">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <h3 style="margin:0;">장바구니 불러오기</h3>
+            <div style="display:flex; gap:6px;">
+              <button class="btn-export btn-export-fail" id="btnCartDelete"
+                      onclick="openCartDeleteModal()" disabled>삭제</button>
+              <button class="btn-export btn-export-blue" id="btnCartAdd"
+                      onclick="handleCartSelect()" disabled>추가</button>
+            </div>
           </div>
           <p style="font-size:11px; color:#666; margin:0 0 10px 0;">
-            사용자의 ft_carts(status='ORDER') 목록입니다. 카트를 선택하면 즉시 주문 목록에 적재됩니다.
+            ft_carts(status='ORDER') 목록입니다. 카트를 선택하고 [추가] 를 누르세요. [삭제] 는 패스워드 확인 후 진행됩니다.
           </p>
           <div style="display:flex; align-items:center; gap:10px;">
             <select id="ftOrderSelectV2" style="flex:1; padding:8px; font-size:13px;">
@@ -1757,6 +1761,25 @@
         <button class="btn-cancel" onclick="closeSaveConfirmModal()">취소</button>
         <button class="btn-exit-without-save" onclick="exitWithoutSave()">저장하지 않고 종료</button>
         <button class="btn-save-exit" onclick="saveAndExit()">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 장바구니 삭제 패스워드 모달 -->
+  <div class="modal-overlay" id="cartDeleteModal" style="display:none;">
+    <div class="modal-content">
+      <div class="modal-title">장바구니 삭제 확인</div>
+      <p style="font-size:12px; color:#666; margin:8px 0 12px 0;">
+        선택한 카트와 모든 아이템이 영구 삭제됩니다.<br>
+        진행하려면 패스워드를 입력하세요.
+      </p>
+      <input type="password" id="cartDeletePwInput" class="modal-input"
+             placeholder="패스워드"
+             style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;"
+             onkeydown="if(event.key==='Enter') confirmCartDelete()">
+      <div class="modal-buttons" style="display:flex; flex-direction:row; gap:8px; margin-top:12px; justify-content:flex-end;">
+        <button class="btn-export btn-export-gray" onclick="closeCartDeleteModal()">취소</button>
+        <button class="btn-export btn-export-fail" onclick="confirmCartDelete()">삭제</button>
       </div>
     </div>
   </div>
