@@ -6,7 +6,7 @@ let unmatchedExcelData = [];  // 매칭되지 않은 엑셀 데이터
 let isDataSaved = true;  // 데이터 저장 여부 플래그
 let pendingAction = null;  // 대기 중인 액션 ('refresh' 또는 'close')
 let inquiryOrders = [];  // 문의 탭 데이터
-let currentTab = 'order';  // 현재 활성 탭 ('order' | 'inquiry')
+let currentTab = 'orderV2';  // 현재 활성 탭 ('order' | 'orderV2' | 'inquiry')
 
 // ════════════════════════════════════════════════════════════
 // 주문 탭 패스워드 게이트

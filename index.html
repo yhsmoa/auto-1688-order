@@ -1507,11 +1507,11 @@
 
   <!-- ─── 좌측 고정 사이드바 ─── -->
   <div class="sidebar">
-    <div class="sidebar-item" id="sideOrderV2" onclick="switchTab('orderV2')">
+    <div class="sidebar-item active" id="sideOrderV2" onclick="switchTab('orderV2')">
       <span class="s-icon">🛒</span>
       <span class="s-label">V2 주문</span>
     </div>
-    <div class="sidebar-item active" id="sideOrder" onclick="switchTab('order')">
+    <div class="sidebar-item" id="sideOrder" onclick="switchTab('order')">
       <span class="s-icon">🛍️</span>
       <span class="s-label">주문</span>
     </div>
@@ -1559,7 +1559,7 @@
       <div class="tab-content-wrapper">
 
       <!-- ─── 주문 탭 ─── -->
-      <div class="tab-content active" id="tab-order">
+      <div class="tab-content" id="tab-order">
 
     <div class="input-section">
       <!-- 헤더: H3 좌측 + (자동 생성 토글 + '추가' 버튼) 우측 — V2 주문 탭과 동일 패턴 -->
@@ -1599,7 +1599,7 @@
       </div><!-- /tab-order -->
 
       <!-- ─── V2 주문 탭 ─── -->
-      <div class="tab-content" id="tab-orderV2">
+      <div class="tab-content active" id="tab-orderV2">
         <div class="input-section">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <h3 style="margin:0;">장바구니 불러오기</h3>
