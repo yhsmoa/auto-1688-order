@@ -13,14 +13,15 @@ let currentTab = 'orderV2';  // 현재 활성 탭 ('order' | 'orderV2' | 'inquir
 // - 사용자/유저 드롭박스를 활성화하기 위해 입력해야 하는 패스워드
 // - 일치 시 isOrderUnlocked = true → 드롭박스 활성화
 // ════════════════════════════════════════════════════════════
-const ORDER_PASSWORD = '16665562643';
+// 게이트 비밀번호는 .env(ORDER_PASSWORD)에서 로드한다. 소스/히스토리에 하드코딩하지 않는다.
+const ORDER_PASSWORD = (window.api && window.api.getEnv && window.api.getEnv('ORDER_PASSWORD')) || '';
 let isOrderUnlocked = false;
 
 // 패스워드 입력 핸들러
 function onPasswordInput() {
   const input = document.getElementById('orderPwInput');
   if (!input) return;
-  const matched = input.value === ORDER_PASSWORD;
+  const matched = ORDER_PASSWORD !== '' && input.value === ORDER_PASSWORD;
 
   if (matched && !isOrderUnlocked) {
     isOrderUnlocked = true;
@@ -1714,7 +1715,7 @@ function closeCartDeleteModal() {
 async function confirmCartDelete() {
   const input = document.getElementById('cartDeletePwInput');
   const pw = input?.value || '';
-  if (pw !== ORDER_PASSWORD) {
+  if (ORDER_PASSWORD === '' || pw !== ORDER_PASSWORD) {
     alert('패스워드가 일치하지 않습니다.');
     if (input) { input.value = ''; input.focus(); }
     return;
