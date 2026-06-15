@@ -4294,10 +4294,17 @@ function makeEditable(cell, index, field) {
   input.addEventListener('blur', saveValue);
 }
 
-// 전체 체크박스 토글
+// 검색/필터로 숨겨지지 않은(보이는) 행의 체크박스만 반환
+function getVisibleRowCheckboxes() {
+  return Array.from(document.querySelectorAll('.row-checkbox')).filter(cb => {
+    const row = cb.closest('tr');
+    return !row || !row.classList.contains('search-hidden');
+  });
+}
+
+// 전체 체크박스 토글 (필터로 조회된 = 보이는 행만 대상)
 function toggleAllCheckboxes(headerCheckbox) {
-  const checkboxes = document.querySelectorAll('.row-checkbox');
-  checkboxes.forEach(cb => {
+  getVisibleRowCheckboxes().forEach(cb => {
     const index = parseInt(cb.dataset.index);
     cb.checked = headerCheckbox.checked;
     orders[index].checked = headerCheckbox.checked;
@@ -4319,16 +4326,15 @@ function toggleRowCheckbox(index, event) {
   }
 }
 
-// 헤더 체크박스 상태 업데이트
+// 헤더 체크박스 상태 업데이트 (보이는 행 기준)
 function updateHeaderCheckbox() {
-  const allCheckboxes = document.querySelectorAll('.row-checkbox');
   const headerCheckbox = document.querySelector('thead input[type="checkbox"]');
-  if (headerCheckbox) {
-    const allChecked = Array.from(allCheckboxes).every(cb => cb.checked);
-    const someChecked = Array.from(allCheckboxes).some(cb => cb.checked);
-    headerCheckbox.checked = allChecked;
-    headerCheckbox.indeterminate = someChecked && !allChecked;
-  }
+  if (!headerCheckbox) return;
+  const visible = getVisibleRowCheckboxes();
+  const allChecked = visible.length > 0 && visible.every(cb => cb.checked);
+  const someChecked = visible.some(cb => cb.checked);
+  headerCheckbox.checked = allChecked;
+  headerCheckbox.indeterminate = someChecked && !allChecked;
 }
 
 // 체크박스 변경 이벤트 리스너 (이벤트 위임)
@@ -4336,16 +4342,7 @@ document.addEventListener('change', (e) => {
   if (e.target.classList.contains('row-checkbox')) {
     const index = parseInt(e.target.dataset.index);
     orders[index].checked = e.target.checked;
-
-    // 헤더 체크박스 상태 업데이트
-    const allCheckboxes = document.querySelectorAll('.row-checkbox');
-    const headerCheckbox = document.querySelector('thead input[type="checkbox"]');
-    if (headerCheckbox) {
-      const allChecked = Array.from(allCheckboxes).every(cb => cb.checked);
-      const someChecked = Array.from(allCheckboxes).some(cb => cb.checked);
-      headerCheckbox.checked = allChecked;
-      headerCheckbox.indeterminate = someChecked && !allChecked;
-    }
+    updateHeaderCheckbox();
   }
 });
 
@@ -5354,6 +5351,7 @@ function applyTableFilter() {
   if (!s1 && !s2) {
     rows.forEach(row => row.classList.remove('search-hidden'));
     if (countSpan) countSpan.textContent = '';
+    updateHeaderCheckbox();
     return;
   }
 
@@ -5388,6 +5386,9 @@ function applyTableFilter() {
 
   // 필터 변경 후 주황색 네비게이션 카운트 갱신
   updateOrangeNav();
+
+  // 헤더 체크박스 상태를 현재 보이는 행 기준으로 갱신
+  updateHeaderCheckbox();
 }
 
 // 하위 호환 래퍼 (기존 호출부 유지용)
