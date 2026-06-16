@@ -18,5 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   forceClose: () => ipcRenderer.send('force-close'),
   closeAfterSave: () => ipcRenderer.send('close-after-save'),
   // 앱 재시작 (종료 후 자동 재실행)
-  restartApp: () => ipcRenderer.send('restart-app')
+  restartApp: () => ipcRenderer.send('restart-app'),
+  // 네이티브 다이얼로그 후 입력칸 포커스 복구
+  restoreFocus: () => ipcRenderer.send('restore-focus')
 });

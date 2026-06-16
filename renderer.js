@@ -1,5 +1,17 @@
 console.log('=== renderer.js 로드 완료 ===');
 
+// ── 네이티브 다이얼로그(alert/confirm) 후 입력칸 포커스 복구 ──
+// Electron 버그: alert/confirm을 닫으면 <input>/<textarea>가 클릭해도 포커스를
+// 받지 못해 "비활성화"된 것처럼 보인다(버튼은 정상). 다이얼로그 직후 창 포커스를
+// 복구해 입력칸을 다시 쓸 수 있게 한다. (alert 125곳을 한 곳에서 일괄 처리)
+(function patchDialogsForFocus() {
+  const nativeAlert = window.alert.bind(window);
+  const nativeConfirm = window.confirm.bind(window);
+  const restore = () => { try { window.api?.restoreFocus?.(); } catch (_) {} };
+  window.alert = (msg) => { nativeAlert(msg); restore(); };
+  window.confirm = (msg) => { const r = nativeConfirm(msg); restore(); return r; };
+})();
+
 let orders = [];
 let isProcessing = false;  // 주문 진행 중 플래그
 let unmatchedExcelData = [];  // 매칭되지 않은 엑셀 데이터
@@ -2088,13 +2100,15 @@ function renderOrderList() {
     const offerId    = (order.dbData?.['1688_offer_id']) || '';
     const barcode    = (order.dbData?.barcode) || '';
     const sellerName = order.reviewResult?.cartItem?.sellerName || '';
+    const productName = order.reviewResult?.cartItem?.productName || '';
     const itemName   = order.dbData?.item_name || '';
     const optionName = order.dbData?.option_name || '';
     const imgUrl     = order.dbData?.img_url || '';
 
-    const escapedUrl    = order.url.replace(/'/g, "\\'");
-    const escapedSeller = sellerName.replace(/'/g, "\\'");
-    const escapedImg    = imgUrl.replace(/'/g, "\\'");
+    const escapedUrl     = order.url.replace(/'/g, "\\'");
+    const escapedSeller  = sellerName.replace(/'/g, "\\'");
+    const escapedProduct = productName.replace(/'/g, "\\'");
+    const escapedImg     = imgUrl.replace(/'/g, "\\'");
 
     const itemLabel = itemName + (optionName ? ', ' + optionName : '');
 
@@ -2133,12 +2147,21 @@ function renderOrderList() {
           ${barcode || '-'}
         </span>
       </div>
-      ${sellerName ? `
-      <div class="cell-clickable cell-seller"
-           onclick="event.stopPropagation(); copyToClipboard('${escapedSeller}');"
-           title="클릭하여 판매자명 복사"
-           style="color:#555; margin-top:3px;">
-        ${sellerName}
+      ${(sellerName || productName) ? `
+      <div style="display:flex; align-items:center; gap:4px; margin-top:3px; flex-wrap:wrap; color:#555;">
+        ${sellerName ? `
+        <span class="cell-clickable cell-seller"
+              onclick="event.stopPropagation(); copyToClipboard('${escapedSeller}');"
+              title="클릭하여 판매자명 복사">
+          ${sellerName}
+        </span>` : ''}
+        ${(sellerName && productName) ? `<span style="color:#ccc; user-select:none;">|</span>` : ''}
+        ${productName ? `
+        <span class="cell-clickable"
+              onclick="event.stopPropagation(); copyToClipboard('${escapedProduct}');"
+              title="클릭하여 상품명 복사">
+          ${productName}
+        </span>` : ''}
       </div>` : ''}
     `;
 

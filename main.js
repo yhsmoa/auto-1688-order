@@ -239,6 +239,15 @@ ipcMain.on('close-after-save', () => {
   mainWindow.close();
 });
 
+// 네이티브 다이얼로그(alert/confirm) 종료 후 창 포커스 복구
+// - Electron에서 alert/confirm을 닫으면 텍스트 입력칸이 클릭해도 포커스를 못 받는
+//   버그가 있어, 렌더러가 다이얼로그 직후 이 핸들러를 호출해 포커스를 되돌린다.
+ipcMain.on('restore-focus', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.focus();
+  mainWindow.webContents.focus();
+});
+
 // 앱 재시작 (종료 후 자동 재실행 — 닫고 새로 연 것과 동일 상태)
 ipcMain.on('restart-app', () => {
   forceClose = true;       // unsaved-data 체크 우회
