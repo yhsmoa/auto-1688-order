@@ -585,7 +585,7 @@ async function checkShippingFee(page) {
     const totalPrice = parseFloat(totalPriceText.replace(/[^0-9.]/g, '')) || 0;
 
     // 배송비 추출
-    const freightEl = page.locator('.order-select-models .total-freight-fee strong.currency');
+    const freightEl = page.locator('.order-select-models .total-freight-fee strong');
     const freightText = await freightEl.innerText().catch(() => '');
     const freightFee = parseFloat(freightText.replace(/[^0-9.]/g, '')) || 0;
 
