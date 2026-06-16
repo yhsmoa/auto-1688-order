@@ -1,6 +1,6 @@
 {
   "name": "auto-1688-order",
-  "version": "1.0.48",
+  "version": "1.0.49",
   "description": "1688 자동 주문 시스템",
   "main": "main.js",
   "author": "Your Name",

@@ -12,6 +12,15 @@ console.log('=== renderer.js 로드 완료 ===');
   window.confirm = (msg) => { const r = nativeConfirm(msg); restore(); return r; };
 })();
 
+// ── 재시작 버튼 아래에 현재 앱 버전 표시 ──
+window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const v = await window.api?.getAppVersion?.();
+    const el = document.getElementById('appVersionLabel');
+    if (el && v) el.textContent = 'v' + v;
+  } catch (_) {}
+});
+
 let orders = [];
 let isProcessing = false;  // 주문 진행 중 플래그
 let unmatchedExcelData = [];  // 매칭되지 않은 엑셀 데이터

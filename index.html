@@ -223,6 +223,8 @@
       left: 0;
       right: 0;
       display: flex;
+      flex-direction: column;
+      align-items: center;
       justify-content: center;
       padding-top: 14px;
       border-top: 1px solid rgba(255, 255, 255, 0.08);
@@ -1501,6 +1503,7 @@
     <!-- ─── 앱 재시작 (사이드바 제일 바닥, 모든 탭 공통) ─── -->
     <div class="rp-restart-wrap">
       <button class="btn-restart" id="btnRestartApp" onclick="restartApp()">재시작</button>
+      <div id="appVersionLabel" style="text-align:center; font-size:11px; color:#888; margin-top:6px;">v—</div>
     </div>
 
   </div><!-- /right-panel -->

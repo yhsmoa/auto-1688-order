@@ -248,6 +248,9 @@ ipcMain.on('restore-focus', () => {
   mainWindow.webContents.focus();
 });
 
+// 현재 앱 버전 조회 (UI 표시용)
+ipcMain.handle('get-app-version', () => app.getVersion());
+
 // 앱 재시작 (종료 후 자동 재실행 — 닫고 새로 연 것과 동일 상태)
 ipcMain.on('restart-app', () => {
   forceClose = true;       // unsaved-data 체크 우회
