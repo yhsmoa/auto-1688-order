@@ -85,8 +85,8 @@ function applyOrderUnlockState() {
 const USER_CODE_BUTTON_VISIBILITY = {
   HI: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
   MB: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeduct', 'btnExportSuccess', 'btnExportFail'],
-  BO: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFail'],
+  BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
+  BO: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
 };
 
 // 우측 패널의 모든 버튼 ID (가시성 계산용)
