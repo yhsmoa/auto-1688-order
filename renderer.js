@@ -3952,10 +3952,40 @@ async function exportFailedOrdersV2() {
 
     console.log('ft_order_items_failed 저장 데이터:', itemsToInsert.length, '건');
 
-    // ── Supabase INSERT ──
+    // ── 중복 사전 체크: 이미 저장된 item_no는 제외하고 새 건만 INSERT ──
+    // item_no(=order_number)는 아이템 단위 고유 식별자 (generateItemNo seq 기반)
+    // → 실패V2를 여러 번 눌러도 이미 저장된 건은 다시 저장되지 않고, 새 건만 추가됨
+    const candItemNos = itemsToInsert.map(it => it.item_no).filter(Boolean);
+    let toInsert = itemsToInsert;
+    let skipped = 0;
+    if (candItemNos.length > 0) {
+      const { data: existing, error: dupErr } = await supabaseClient
+        .from('ft_order_items_failed')
+        .select('item_no')
+        .eq('user_id', ftUserId)
+        .in('item_no', candItemNos);
+      if (dupErr) {
+        console.error('실패V2 중복 조회 오류:', dupErr);
+        if (!confirm('이미 저장된 데이터 확인에 실패했습니다.\n그대로 저장하면 중복될 수 있습니다. 진행할까요?')) {
+          return;
+        }
+      } else {
+        const savedSet = new Set((existing || []).map(r => r.item_no));
+        toInsert = itemsToInsert.filter(it => !it.item_no || !savedSet.has(it.item_no));
+        skipped = itemsToInsert.length - toInsert.length;
+        console.log(`실패V2 중복 ${skipped}건 제외, 신규 ${toInsert.length}건`);
+      }
+    }
+
+    if (toInsert.length === 0) {
+      alert(`이미 모두 저장되어 있습니다.\n(중복 ${skipped}건 제외 — 추가할 새 데이터 없음)`);
+      return;
+    }
+
+    // ── Supabase INSERT (새 건만) ──
     const { data, error } = await supabaseClient
       .from('ft_order_items_failed')
-      .insert(itemsToInsert)
+      .insert(toInsert)
       .select();
 
     if (error) {
@@ -3967,7 +3997,7 @@ async function exportFailedOrdersV2() {
     const savedCount = data ? data.length : 0;
     console.log(`✓ ft_order_items_failed 저장 완료: ${savedCount}건`);
 
-    alert(`실패V2 저장 완료!\n\nft_order_items_failed: ${savedCount}건 저장`);
+    alert(`실패V2 저장 완료!\n\nft_order_items_failed: ${savedCount}건 저장${skipped > 0 ? `\n(중복 ${skipped}건 제외)` : ''}`);
 
     // ── 버튼 상태 업데이트 ──
     stepStatus.fail = true;
