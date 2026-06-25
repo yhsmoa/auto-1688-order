@@ -181,8 +181,9 @@ function switchTab(tabName) {
   } else if (tabName === 'orderV2') {
     document.getElementById('tab-orderV2').classList.add('active');
     document.getElementById('sideOrderV2').classList.add('active');
-    // 진입 시 드롭박스 새로고침 (ft_carts.status='ORDER' 목록)
+    // 진입 시 드롭박스 새로고침 (ft_carts.status='ORDER' 목록) + 신규주문건 보드 갱신
     loadFtCartsDropdown();
+    loadNewOrderCounts();
   } else if (tabName === 'inquiry') {
     document.getElementById('tab-inquiry').classList.add('active');
     document.getElementById('sideInquiry').classList.add('active');
@@ -717,7 +718,8 @@ window.addEventListener('DOMContentLoaded', () => {
 
       // 드롭박스 데이터 로드 (users_api + ft_users)
       loadUsersApi();
-      loadFtUsers();
+      // ft_users 로드 후 신규주문건 보드 채움(이름 매핑 위해 ftUsersData 먼저 필요)
+      loadFtUsers().then(() => loadNewOrderCounts());
     } else {
       console.warn('⚠️ Supabase 환경 변수가 설정되지 않았습니다.');
     }
@@ -1350,9 +1352,11 @@ function applyCartAreaLock() {
   const sel    = document.getElementById('ftOrderSelectV2');
   const btnAdd = document.getElementById('btnCartAdd');
   const btnDel = document.getElementById('btnCartDelete');
+  const btnRej = document.getElementById('btnCartReject');
   if (sel)    sel.disabled    = cartAddLocked;
   if (btnAdd) btnAdd.disabled = cartAddLocked || !sel?.value;
   if (btnDel) btnDel.disabled = cartAddLocked || !sel?.value;
+  if (btnRej) btnRej.disabled = cartAddLocked || !sel?.value;
 }
 
 function lockCartArea() {
@@ -1715,18 +1719,39 @@ async function handleCartSelect() {
 // 【V2 주문 탭 전용】 선택된 ft_carts 행 + 연결된 ft_cart_items 모두 영구 삭제.
 //  실수 방지를 위해 상단 게이트와 동일한 ORDER_PASSWORD 확인 필요.
 
-function openCartDeleteModal() {
+// 비밀번호 모달을 삭제/반려 두 용도로 공용 사용 ('delete' | 'reject')
+let cartPwAction = 'delete';
+
+function openCartPwModal(action) {
   const sel = document.getElementById('ftOrderSelectV2');
   if (!sel?.value) {
-    alert('삭제할 카트를 먼저 선택하세요.');
+    alert(action === 'reject' ? '반려할 카트를 먼저 선택하세요.' : '삭제할 카트를 먼저 선택하세요.');
     return;
   }
+  cartPwAction = action;
+
+  const title = document.getElementById('cartPwModalTitle');
+  const desc  = document.getElementById('cartPwModalDesc');
+  const btn   = document.getElementById('cartPwModalConfirmBtn');
+  if (action === 'reject') {
+    if (title) title.textContent = '장바구니 반려 확인';
+    if (desc)  desc.innerHTML = '선택한 카트를 신규(NEW) 상태로 되돌립니다.<br>진행하려면 패스워드를 입력하세요.';
+    if (btn)   btn.textContent = '반려';
+  } else {
+    if (title) title.textContent = '장바구니 삭제 확인';
+    if (desc)  desc.innerHTML = '선택한 카트와 모든 아이템이 영구 삭제됩니다.<br>진행하려면 패스워드를 입력하세요.';
+    if (btn)   btn.textContent = '삭제';
+  }
+
   const modal = document.getElementById('cartDeleteModal');
   const input = document.getElementById('cartDeletePwInput');
   if (input) input.value = '';
   if (modal) modal.style.display = 'flex';
   setTimeout(() => input?.focus(), 50);
 }
+
+function openCartDeleteModal() { openCartPwModal('delete'); }
+function openCartRejectModal() { openCartPwModal('reject'); }
 
 function closeCartDeleteModal() {
   const modal = document.getElementById('cartDeleteModal');
@@ -1741,6 +1766,10 @@ async function confirmCartDelete() {
     if (input) { input.value = ''; input.focus(); }
     return;
   }
+
+  // 반려 모드: 삭제 대신 status='NEW' 로 되돌린다.
+  if (cartPwAction === 'reject') { await rejectSelectedCart(); return; }
+
   const sel = document.getElementById('ftOrderSelectV2');
   const cartId = sel?.value;
   if (!cartId) { closeCartDeleteModal(); return; }
@@ -1763,6 +1792,81 @@ async function confirmCartDelete() {
   closeCartDeleteModal();
   await loadFtCartsDropdown(); // 드롭박스 새로고침 (삭제된 카트 사라짐)
   alert('카트가 삭제되었습니다.');
+}
+
+// 【V2 주문 탭 전용】 선택된 카트를 status='NEW' 로 되돌린다(반려).
+//  ORDER 목록에서 사라지고, 상단 신규주문건 보드에 반영된다.
+async function rejectSelectedCart() {
+  const sel = document.getElementById('ftOrderSelectV2');
+  const cartId = sel?.value;
+  if (!cartId) { closeCartDeleteModal(); return; }
+  if (!supabaseClient) { alert('Supabase 초기화 안됨'); return; }
+
+  const { error } = await supabaseClient
+    .from('ft_carts').update({ status: 'NEW' }).eq('id', cartId);
+  if (error) {
+    alert(`반려 실패: ${error.message}`);
+    return;
+  }
+
+  closeCartDeleteModal();
+  await loadFtCartsDropdown(); // ORDER 목록 갱신 (반려된 카트 사라짐)
+  await loadNewOrderCounts();  // 신규주문건 보드 갱신 (NEW 증가)
+  alert('카트가 반려되었습니다. (status=NEW)');
+}
+
+// 【V2 주문 탭 전용】 ft_carts.status='NEW' 카트 수를 유저별로 집계해 상단 보드에 표시.
+//  - 전체 유저 대상, user_id → 이름(vender_name||full_name)은 ftUsersData에서 매핑.
+async function loadNewOrderCounts() {
+  const board = document.getElementById('newOrderCountBoard');
+  if (!board) return;
+  if (!supabaseClient) { board.textContent = ''; return; }
+
+  const { data, error } = await supabaseClient
+    .from('ft_carts')
+    .select('user_id')
+    .eq('status', 'NEW');
+
+  board.innerHTML = '';
+  const label = document.createElement('strong');
+  label.textContent = '신규주문건 ';
+  label.style.marginRight = '6px';
+  board.appendChild(label);
+
+  if (error) {
+    console.error('신규주문건 조회 실패:', error);
+    const errSpan = document.createElement('span');
+    errSpan.style.color = '#c00';
+    errSpan.textContent = '조회 실패';
+    board.appendChild(errSpan);
+    return;
+  }
+
+  const counts = new Map();
+  (data || []).forEach(r => counts.set(r.user_id, (counts.get(r.user_id) || 0) + 1));
+
+  if (counts.size === 0) {
+    const none = document.createElement('span');
+    none.style.color = '#888';
+    none.textContent = '없음';
+    board.appendChild(none);
+    return;
+  }
+
+  const nameById = new Map();
+  if (typeof ftUsersData !== 'undefined' && Array.isArray(ftUsersData)) {
+    ftUsersData.forEach(u => nameById.set(u.id, u.vender_name || u.full_name || u.id));
+  }
+
+  [...counts.entries()]
+    .map(([uid, cnt]) => ({ name: nameById.get(uid) || uid, cnt }))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    .forEach(e => {
+      const chip = document.createElement('span');
+      chip.style.cssText = 'display:inline-block; padding:2px 8px; margin:2px; background:#eef2ff; border-radius:10px;';
+      chip.textContent = `${e.name} ${e.cnt}건`;
+      board.appendChild(chip);
+    });
 }
 
 // Supabase 컬럼 매핑 (인덱스 -> 컬럼명)

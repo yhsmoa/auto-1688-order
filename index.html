@@ -1604,9 +1604,14 @@
       <!-- ─── V2 주문 탭 ─── -->
       <div class="tab-content active" id="tab-orderV2">
         <div class="input-section">
+          <!-- 유저별 신규주문건(ft_carts.status='NEW') 수 -->
+          <div id="newOrderCountBoard"
+               style="margin-bottom:10px; padding:8px 10px; background:#f8f9fb; border:1px solid #eee; border-radius:6px; font-size:12px; color:#444; min-height:20px;"></div>
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <h3 style="margin:0;">장바구니 불러오기</h3>
             <div style="display:flex; gap:6px;">
+              <button class="btn-export btn-export-gray" id="btnCartReject"
+                      onclick="openCartRejectModal()" disabled>반려</button>
               <button class="btn-export btn-export-fail" id="btnCartDelete"
                       onclick="openCartDeleteModal()" disabled>삭제</button>
               <button class="btn-export btn-export-blue" id="btnCartAdd"
@@ -1771,8 +1776,8 @@
   <!-- 장바구니 삭제 패스워드 모달 -->
   <div class="modal-overlay" id="cartDeleteModal" style="display:none;">
     <div class="modal-content">
-      <div class="modal-title">장바구니 삭제 확인</div>
-      <p style="font-size:12px; color:#666; margin:8px 0 12px 0;">
+      <div class="modal-title" id="cartPwModalTitle">장바구니 삭제 확인</div>
+      <p id="cartPwModalDesc" style="font-size:12px; color:#666; margin:8px 0 12px 0;">
         선택한 카트와 모든 아이템이 영구 삭제됩니다.<br>
         진행하려면 패스워드를 입력하세요.
       </p>
@@ -1782,7 +1787,7 @@
              onkeydown="if(event.key==='Enter') confirmCartDelete()">
       <div class="modal-buttons" style="display:flex; flex-direction:row; gap:8px; margin-top:12px; justify-content:flex-end;">
         <button class="btn-export btn-export-gray" onclick="closeCartDeleteModal()">취소</button>
-        <button class="btn-export btn-export-fail" onclick="confirmCartDelete()">삭제</button>
+        <button class="btn-export btn-export-fail" id="cartPwModalConfirmBtn" onclick="confirmCartDelete()">삭제</button>
       </div>
     </div>
   </div>
