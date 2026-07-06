@@ -1791,6 +1791,7 @@ async function confirmCartDelete() {
 
   closeCartDeleteModal();
   await loadFtCartsDropdown(); // 드롭박스 새로고침 (삭제된 카트 사라짐)
+  await loadNewOrderCounts();  // 신규주문건 보드 갱신 (ORDER 카트 감소)
   alert('카트가 삭제되었습니다.');
 }
 
@@ -1811,11 +1812,11 @@ async function rejectSelectedCart() {
 
   closeCartDeleteModal();
   await loadFtCartsDropdown(); // ORDER 목록 갱신 (반려된 카트 사라짐)
-  await loadNewOrderCounts();  // 신규주문건 보드 갱신 (NEW 증가)
+  await loadNewOrderCounts();  // 신규주문건 보드 갱신 (ORDER 감소)
   alert('카트가 반려되었습니다. (status=NEW)');
 }
 
-// 【V2 주문 탭 전용】 ft_carts.status='NEW' 카트 수를 유저별로 집계해 상단 보드에 표시.
+// 【V2 주문 탭 전용】 ft_carts.status='ORDER'(불러오기 대상) 카트 수를 유저별로 집계해 상단 보드에 표시.
 //  - 전체 유저 대상, user_id → 이름(vender_name||full_name)은 ftUsersData에서 매핑.
 async function loadNewOrderCounts() {
   const board = document.getElementById('newOrderCountBoard');
@@ -1825,7 +1826,7 @@ async function loadNewOrderCounts() {
   const { data, error } = await supabaseClient
     .from('ft_carts')
     .select('user_id')
-    .eq('status', 'NEW');
+    .eq('status', 'ORDER');
 
   board.innerHTML = '';
   const label = document.createElement('strong');
@@ -5099,6 +5100,8 @@ async function saveToSupabaseV2() {
       } else {
         console.log(`✓ ft_carts(${cartIdsToFinalize.length}개).status → 'DONE'`);
       }
+      // ORDER → DONE 으로 빠졌으므로 신규주문건 보드 갱신
+      if (typeof loadNewOrderCounts === 'function') loadNewOrderCounts();
     }
 
     // 【V2 주문 탭 세션】 V2 저장 성공 → 다음 주문은 새 order_no 로 시작
