@@ -2890,49 +2890,68 @@ async function selectShopCheckboxes(page) {
 
 // 结算 버튼은 판매자 24개 초과 시 비활성화되므로 초과분을 해제한다.
 // 판매자 체크박스 해제(판매자 레벨)만 수행 — 상품 체크박스는 건드리지 않음.
-// 주의: wrapper(label) 클릭은 내부 input으로 클릭이 중복 전달되어 두 번 토글(해제→재선택)되므로
-// 다른 선택 로직과 동일하게 .next-checkbox-input을 직접 클릭해야 한다.
+// 주의 1: 全选은 lazy-load로 아직 렌더링되지 않은 판매자까지 서버에서 선택하므로,
+//   DOM 체크박스 수가 아니라 하단 바 '卖家数量 X/24' 텍스트로 실제 선택 수를 읽어야 한다.
+//   (DOM만 세면 28개 선택인데 25개로 보여 1개만 해제하고 넘어가는 문제 발생)
+// 주의 2: wrapper(label) 클릭은 내부 input으로 클릭이 중복 전달되어 두 번 토글(해제→재선택)되므로
+//   다른 선택 로직과 동일하게 .next-checkbox-input을 직접 클릭해야 한다.
 async function trimExcessSellers(page, max = 24) {
   const sellerCheckedSel = '[class*="companyWrapper"] .next-checkbox-wrapper.checked';
 
-  const current = await page.locator(sellerCheckedSel).count();
-  console.log(`  판매자 체크 ${current}/${max}`);
+  // 하단 바 '卖家数量 X/24'에서 실제 선택 수 읽기 (실패 시 DOM 체크박스 수로 폴백)
+  const readSelectedCount = async () => {
+    const fromBar = await page.evaluate(() => {
+      const items = document.querySelectorAll('[class*="bottom-bar--item"]');
+      for (const el of items) {
+        const m = (el.textContent || '').match(/卖家数量\s*(\d+)\s*\/\s*\d+/);
+        if (m) return parseInt(m[1], 10);
+      }
+      return null;
+    }).catch(() => null);
+    if (fromBar !== null) return fromBar;
+    return await page.locator(sellerCheckedSel).count();
+  };
+
+  let current = await readSelectedCount();
+  console.log(`  판매자 선택 ${current}/${max}`);
 
   if (current <= max) return;
 
-  const excess = current - max;
-  console.log(`  초과 ${excess}개 해제 시작`);
+  console.log(`  초과 ${current - max}개 해제 시작 (첫 번째 판매자부터)`);
 
   // 해제 1건마다 실제 반영 여부를 폴링 검증 — 실패 시 재시도 (최대 초과분×3회)
-  const maxAttempts = excess * 3;
+  const maxAttempts = (current - max) * 3;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     checkShouldStop();
+    current = await readSelectedCount();
+    if (current <= max) break;
+
     const checked = page.locator(sellerCheckedSel);
-    const count = await checked.count();
-    if (count <= max || count === 0) break;
+    if (await checked.count() === 0) break;
 
-    // 마지막(가장 하단) 판매자부터 해제 → 스크롤로 추가 로드된 것 우선 제외
-    const last = checked.nth(count - 1);
-    await last.scrollIntoViewIfNeeded().catch(() => {});
-    await last.locator('.next-checkbox-input').first().click();
+    // 첫 번째(최상단) 판매자부터 해제
+    const first = checked.first();
+    await first.scrollIntoViewIfNeeded().catch(() => {});
+    await first.locator('.next-checkbox-input').first().click();
 
-    // 해제 반영 폴링 (500ms × 20 = 최대 10초)
+    // 해제 반영 폴링 (500ms × 20 = 최대 10초) — 하단 바 숫자가 줄었는지 확인
     let applied = false;
     for (let p = 0; p < 20; p++) {
       await page.waitForTimeout(500);
-      if (await page.locator(sellerCheckedSel).count() < count) {
+      const now = await readSelectedCount();
+      if (now < current) {
         applied = true;
+        current = now;
         break;
       }
     }
-    const now = await page.locator(sellerCheckedSel).count();
-    console.log(`  - 판매자 해제 ${applied ? '성공' : '실패(반영 안 됨, 재시도)'} (${count} → ${now})`);
+    console.log(`  - 판매자 해제 ${applied ? '성공' : '실패(반영 안 됨, 재시도)'} (현재 ${current}/${max})`);
   }
 
-  const after = await page.locator(sellerCheckedSel).count();
-  console.log(`  판매자 체크 완료: ${after}/${max}`);
+  const after = await readSelectedCount();
+  console.log(`  판매자 선택 완료: ${after}/${max}`);
   if (after > max) {
-    throw new Error(`판매자 체크 초과 해제 실패 (${after}/${max}) — 결산 진행 불가로 중단합니다.`);
+    throw new Error(`판매자 선택 초과 해제 실패 (${after}/${max}) — 결산 진행 불가로 중단합니다.`);
   }
 }
 
