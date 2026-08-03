@@ -76,15 +76,18 @@ function applyOrderUnlockState() {
 // ════════════════════════════════════════════════════════════
 // user_code 그룹별 우측 패널 버튼 가시성
 // - ft_users.user_code prefix(알파벳 앞부분)로 그룹 결정
-// - HI/MB → V2 풀 워크플로우
-// - BZ    → V1 풀 워크플로우
-// - BO    → 혼합 (저장 V2, 차감 V1, 실패만)
+// - HI/MB/BO → 저장 V2 + 차감 V1
+// - BZ       → 저장 V1·V2 + 차감 V1
+// 차감은 4개 그룹 모두 V1(btnDeduct → invoiceManager_transactions)으로 통일.
+//   주의: V1 차감은 ft_balances 잔액을 갱신하지 않는다(기록 전용).
+//   HI/MB 잔액은 2026-08-03 전환 이후 ft_balances에 반영되지 않으므로
+//   잔액은 invoiceManager_transactions의 충전-차감 합계로 계산해야 한다.
 // ════════════════════════════════════════════════════════════
 // 중단 버튼(btnStop, btnStopV2)은 작업 진행 상태에 따라 자체 제어되므로
 // user_code 그룹 가시성 토글 대상에서 분리
 const USER_CODE_BUTTON_VISIBILITY = {
-  HI: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  MB: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  HI: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
+  MB: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
   BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
   BO: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
 };
