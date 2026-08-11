@@ -1706,14 +1706,16 @@ async function handleCartSelect() {
   stepStatus.parse = true;
   updateButtonSteps();
 
-  // 6) 사용 완료된 옵션 드롭박스에서 제거 + 선택 초기화 + 두 버튼 비활성화
+  // 6) 사용 완료된 옵션 드롭박스에서 제거 + 선택 초기화 + 세 버튼 비활성화
   const usedOpt = sel.querySelector(`option[value="${cartId}"]`);
   if (usedOpt) usedOpt.remove();
   sel.value = '';
   const btnAdd = document.getElementById('btnCartAdd');
   const btnDel = document.getElementById('btnCartDelete');
+  const btnRej = document.getElementById('btnCartReject');
   if (btnAdd) btnAdd.disabled = true;
   if (btnDel) btnDel.disabled = true;
+  if (btnRej) btnRej.disabled = true;
 
   alert(`${newOrders.length}건 추가됨 (총 ${orders.length}건)\norder_no: ${orderNo}\nitem_seq: ${base + 1} ~ ${base + seqMap.size}`);
 }
@@ -5019,7 +5021,8 @@ async function saveToSupabaseV2() {
         item_name: db.item_name || null,
         option_name: db.option_name || null,
         order_qty: db.order_qty || null,
-        barcode: db.barcode || null,
+        // barcode 미입력(F열 공란) 시 product_no 로 대체 채움
+        barcode: db.barcode || productNo || null,
         china_option1: db.china_option1 || null,
         china_option2: db.china_option2 || null,
         price_cny: db.china_price || null,
