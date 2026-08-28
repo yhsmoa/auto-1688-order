@@ -1537,14 +1537,9 @@
                  placeholder="패스워드 입력"
                  oninput="onPasswordInput()" autocomplete="off">
 
-          <!-- users_api 드롭박스 (coupang_name + user_code) — 패스워드 통과 전 비활성 -->
-          <label style="font-size: 13px; color: #555;">사용자:</label>
-          <select id="userSelect" disabled
-                  style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-width: 200px;">
-            <option value="">-- 선택하세요 --</option>
-          </select>
-
-          <!-- ft_users 드롭박스 (full_name + user_code) — 패스워드 통과 전 비활성 -->
+          <!-- ft_users 드롭박스 (vender_name + user_code) — 패스워드 통과 전 비활성
+               ※ 구 users_api '사용자' 드롭박스는 제거됨. user_id/master_account 는
+                  ft_users 의 brand / master_account 컬럼에서 가져온다. -->
           <label style="font-size: 13px; color: #555;">유저:</label>
           <select id="ftUserSelect" disabled
                   style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; min-width: 200px;">
@@ -1638,7 +1633,7 @@
           </div>
           <p>구글 시트에서 전체 행을 복사해서 붙여넣기 하세요 (A~G열)</p>
           <p style="font-size: 11px; color: #666;">필요한 열: A(date), B(상품정보), C(중국어 옵션명), D(수량), E(링크), F(문의내용), G(답변내용)</p>
-          <textarea id="inquiryDataInput" placeholder="먼저 위에서 사용자와 유저를 모두 선택해주세요" disabled style="opacity: 0.5;"></textarea>
+          <textarea id="inquiryDataInput" placeholder="먼저 위에서 유저를 선택해주세요" disabled style="opacity: 0.5;"></textarea>
 
         </div>
 

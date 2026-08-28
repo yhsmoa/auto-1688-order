@@ -57,15 +57,12 @@ function onPasswordInput() {
 
 // 패스워드 잠금 상태에 따라 사용자/유저 드롭박스 활성화/비활성화
 function applyOrderUnlockState() {
-  const userSelect = document.getElementById('userSelect');
   const ftUserSelect = document.getElementById('ftUserSelect');
 
-  if (userSelect) userSelect.disabled = !isOrderUnlocked;
   if (ftUserSelect) ftUserSelect.disabled = !isOrderUnlocked;
 
   // 잠금 상태로 돌아가면 선택값 초기화 → 데이터 입력도 비활성화
   if (!isOrderUnlocked) {
-    if (userSelect) userSelect.value = '';
     if (ftUserSelect) ftUserSelect.value = '';
   }
 
@@ -89,6 +86,7 @@ const USER_CODE_BUTTON_VISIBILITY = {
   HI: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
   MB: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
   BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
+  BR: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
   BO: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
 };
 
@@ -558,14 +556,21 @@ async function saveDeductTransaction(calcData) {
     return;
   }
 
-  // 선택된 사용자 정보 가져오기
-  const userSelect = document.getElementById('userSelect');
-  const selectedUserId = userSelect ? userSelect.value : '';
-  const selectedOption = userSelect ? userSelect.options[userSelect.selectedIndex] : null;
-  const selectedMasterAccount = selectedOption ? selectedOption.dataset.masterAccount : '';
+  // 선택된 유저 정보 가져오기 (ft_users)
+  //  - user_id        ← brand          (예: immong, sulon) : 기존 V1 기록과 동일 형식
+  //  - master_account ← master_account  (예: immong, hilili)
+  const ftUserSelect = document.getElementById('ftUserSelect');
+  const selectedOption = ftUserSelect ? ftUserSelect.selectedOptions[0] : null;
+  const selectedUserId = selectedOption ? (selectedOption.dataset.brand || '') : '';
+  const selectedMasterAccount = selectedOption ? (selectedOption.dataset.masterAccount || '') : '';
+
+  if (!ftUserSelect || !ftUserSelect.value) {
+    alert('유저를 선택해주세요.');
+    return;
+  }
 
   if (!selectedUserId) {
-    alert('사용자를 선택해주세요.');
+    alert('선택한 유저에 brand 값이 없습니다.\nft_users.brand 를 확인해주세요.');
     return;
   }
 
@@ -701,7 +706,8 @@ async function saveDeductTransaction(calcData) {
 let supabaseClient = null;
 
 // ========== 드롭박스 데이터 저장 ==========
-let usersApiData = [];   // users_api 테이블 데이터
+// users_api 는 제거됨 — 사용자 정보는 ft_users 로 일원화
+//   user_id → ft_users.brand / master_account → ft_users.master_account
 let ftUsersData = [];     // ft_users 테이블 데이터
 
 // Supabase 클라이언트 초기화 (페이지 로드 후)
@@ -719,8 +725,7 @@ window.addEventListener('DOMContentLoaded', () => {
       supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
       console.log('✓ Supabase 클라이언트 초기화 완료');
 
-      // 드롭박스 데이터 로드 (users_api + ft_users)
-      loadUsersApi();
+      // 드롭박스 데이터 로드 (ft_users 단일)
       // ft_users 로드 후 신규주문건 보드 채움(이름 매핑 위해 ftUsersData 먼저 필요)
       loadFtUsers().then(() => loadNewOrderCounts());
     } else {
@@ -731,33 +736,8 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// users_api 데이터 로드
-async function loadUsersApi() {
-  if (!supabaseClient) {
-    console.warn('Supabase 클라이언트가 초기화되지 않았습니다.');
-    return;
-  }
-
-  try {
-    const { data, error } = await supabaseClient
-      .from('users_api')
-      .select('user_id, user_code, master_account, coupang_name')
-      .order('master_account', { ascending: true });
-
-    if (error) {
-      console.error('users_api 로드 오류:', error);
-      return;
-    }
-
-    usersApiData = data || [];
-    console.log(`✓ users_api 로드 완료: ${usersApiData.length}개`);
-
-    // 드롭박스 채우기
-    populateUserSelect();
-  } catch (error) {
-    console.error('users_api 로드 중 예외:', error);
-  }
-}
+// (제거됨) loadUsersApi — users_api 테이블 의존 종료.
+//   사용자 정보는 loadFtUsers() 가 ft_users 에서 모두 가져온다.
 
 // ========== ft_users 데이터 로드 ==========
 async function loadFtUsers() {
@@ -769,7 +749,7 @@ async function loadFtUsers() {
   try {
     const { data, error } = await supabaseClient
       .from('ft_users')
-      .select('id, full_name, user_code, phone, address, balance_id, vender_name')
+      .select('id, full_name, user_code, phone, address, balance_id, vender_name, brand, master_account')
       .order('full_name', { ascending: true });
 
     if (error) {
@@ -808,6 +788,11 @@ function populateFtUserSelect() {
     option.dataset.address = user.address || '';
     option.dataset.balanceId = user.balance_id || '';
     option.dataset.venderName = user.vender_name || '';
+    // ── 구 users_api 대체 값 (V1 저장/차감이 사용) ──
+    //   brand          → invoiceManager_* 의 user_id  (예: immong, sulon)
+    //   master_account → 잔액 지갑 주인               (예: immong, hilili)
+    option.dataset.brand = user.brand || '';
+    option.dataset.masterAccount = user.master_account || '';
     select.appendChild(option);
   });
 
@@ -825,57 +810,25 @@ function populateFtUserSelect() {
   });
 }
 
-// ========== users_api 드롭박스 채우기 ==========
-function populateUserSelect() {
-  const select = document.getElementById('userSelect');
-  if (!select) return;
-
-  // 기존 옵션 제거 (첫 번째 옵션 제외)
-  while (select.options.length > 1) {
-    select.remove(1);
-  }
-
-  // 사용자 데이터로 옵션 추가 (coupang_name + user_code 형식)
-  usersApiData.forEach(user => {
-    const option = document.createElement('option');
-    option.value = user.user_id;
-    option.textContent = `${user.coupang_name} ${user.user_code}`;
-    option.dataset.userCode = user.user_code;
-    option.dataset.masterAccount = user.master_account;
-    select.appendChild(option);
-  });
-
-  // 초기 상태: 데이터 입력 비활성화
-  updateDataInputState();
-
-  // 사용자 선택 시 데이터 입력 활성화
-  select.addEventListener('change', () => {
-    updateDataInputState();
-  });
-}
+// (제거됨) populateUserSelect — 사용자(users_api) 드롭박스 삭제.
+//   유저(ft_users) 드롭박스 하나로 통합되었다.
 
 // ════════════════════════════════════════════════════════════
 // 드롭박스/패스워드 선택 상태에 따른 입력 활성화/비활성화
-// - 주문 탭: 패스워드 통과 + 사용자/유저 모두 선택 + user_code 일치 → 활성화
-// - 문의 탭: 사용자/유저 드롭박스와 무관하게 항상 활성화 (독립 동작)
+// - 주문 탭: 패스워드 통과 + 유저(ft_users) 선택 → 활성화
+// - 문의 탭: 유저 드롭박스와 무관하게 항상 활성화 (독립 동작)
 // ════════════════════════════════════════════════════════════
 function updateDataInputState() {
   // ── 주문 탭 입력 상태 ──
-  const userSelect = document.getElementById('userSelect');
   const ftUserSelect = document.getElementById('ftUserSelect');
   const dataInput = document.getElementById('dataInput');
   const btnSave = document.getElementById('btnSave');
 
   if (dataInput) {
-    const isUserSelected = userSelect && userSelect.value !== '';
+    // users_api(사용자 드롭박스) 제거 → ft_users(유저) 선택만으로 판단
     const isFtUserSelected = ftUserSelect && ftUserSelect.value !== '';
-    const bothSelected = isUserSelected && isFtUserSelected;
 
-    const userCode = userSelect?.selectedOptions[0]?.dataset.userCode || '';
-    const ftUserCode = ftUserSelect?.selectedOptions[0]?.dataset.userCode || '';
-    const codesMatch = userCode && ftUserCode && userCode === ftUserCode;
-
-    if (isOrderUnlocked && bothSelected && codesMatch) {
+    if (isOrderUnlocked && isFtUserSelected) {
       dataInput.disabled = false;
       dataInput.style.opacity = '1';
       dataInput.placeholder = '구글 시트에서 행 전체를 선택하고 복사(Ctrl+C) 후 여기에 붙여넣기(Ctrl+V)';
@@ -883,13 +836,9 @@ function updateDataInputState() {
     } else {
       dataInput.disabled = true;
       dataInput.style.opacity = '0.5';
-      if (!isOrderUnlocked) {
-        dataInput.placeholder = '패스워드를 먼저 입력해주세요';
-      } else if (bothSelected && !codesMatch) {
-        dataInput.placeholder = `user_code 불일치: 사용자(${userCode}) ≠ 유저(${ftUserCode})`;
-      } else {
-        dataInput.placeholder = '사용자와 유저를 모두 선택해주세요';
-      }
+      dataInput.placeholder = isOrderUnlocked
+        ? '유저를 선택해주세요'
+        : '패스워드를 먼저 입력해주세요';
       if (btnSave) btnSave.disabled = true;
     }
   }
@@ -4716,12 +4665,12 @@ async function saveToSupabase() {
   console.log(`총 ${orders.length}개의 주문 데이터 저장 시작`);
 
   try {
-    // 선택된 사용자 정보 가져오기
-    const userSelect = document.getElementById('userSelect');
-    const selectedUserId = userSelect ? userSelect.value : '';
-    const selectedOption = userSelect ? userSelect.options[userSelect.selectedIndex] : null;
-    const selectedUserCode = selectedOption ? selectedOption.dataset.userCode : '';
-    const selectedMasterAccount = selectedOption ? selectedOption.dataset.masterAccount : '';
+    // 선택된 유저 정보 가져오기 (ft_users — 구 users_api 대체)
+    const ftUserSelect = document.getElementById('ftUserSelect');
+    const selectedOption = ftUserSelect ? ftUserSelect.selectedOptions[0] : null;
+    const selectedUserId = selectedOption ? (selectedOption.dataset.brand || '') : '';
+    const selectedUserCode = selectedOption ? (selectedOption.dataset.userCode || '') : '';
+    const selectedMasterAccount = selectedOption ? (selectedOption.dataset.masterAccount || '') : '';
 
     // dbData만 추출하여 배열로 만들기 (사용자 정보 포함)
     const dataToInsert = orders.map(order => {
