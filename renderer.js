@@ -563,6 +563,12 @@ async function saveDeductTransaction(calcData) {
   const selectedOption = ftUserSelect ? ftUserSelect.selectedOptions[0] : null;
   const selectedUserId = selectedOption ? (selectedOption.dataset.brand || '') : '';
   const selectedMasterAccount = selectedOption ? (selectedOption.dataset.masterAccount || '') : '';
+  //  - user_name → username   (BZ=immong / BR=immongbr 처럼 계정별로 구분됨)
+  //  - user_code → user_code
+  //  - master_id → master_id  (ft_users 에 칼럼이 없으면 null 로 저장)
+  const selectedUserName = selectedOption ? (selectedOption.dataset.username || '') : '';
+  const selectedUserCode = selectedOption ? (selectedOption.dataset.userCode || '') : '';
+  const selectedMasterId = selectedOption ? (selectedOption.dataset.masterId || '') : '';
 
   if (!ftUserSelect || !ftUserSelect.value) {
     alert('유저를 선택해주세요.');
@@ -596,7 +602,11 @@ async function saveDeductTransaction(calcData) {
     price: calcData.price,
     master_account: selectedMasterAccount,
     date: dateStr,
-    item_qty: calcData.item_qty
+    item_qty: calcData.item_qty,
+    // ── 계정 구분용 신설 칼럼 ──
+    user_name: selectedUserName || null,
+    user_code: selectedUserCode || null,
+    master_id: selectedMasterId || null
   };
 
   console.log('=== 차감 트랜잭션 저장 ===');
@@ -746,11 +756,23 @@ async function loadFtUsers() {
     return;
   }
 
+  // master_id 는 신설 예정 칼럼 — 아직 없을 수 있으므로 실패 시 제외하고 재조회한다.
+  // (칼럼 하나 때문에 쿼리 전체가 실패해 드롭박스가 비는 것을 방지)
+  const BASE_COLS = 'id, full_name, username, user_code, phone, address, balance_id, vender_name, brand, master_account';
+
   try {
-    const { data, error } = await supabaseClient
+    let { data, error } = await supabaseClient
       .from('ft_users')
-      .select('id, full_name, user_code, phone, address, balance_id, vender_name, brand, master_account')
+      .select(`${BASE_COLS}, master_id`)
       .order('full_name', { ascending: true });
+
+    if (error) {
+      console.warn('ft_users: master_id 칼럼 조회 실패 — 해당 칼럼 없이 재시도합니다.', error.message);
+      ({ data, error } = await supabaseClient
+        .from('ft_users')
+        .select(BASE_COLS)
+        .order('full_name', { ascending: true }));
+    }
 
     if (error) {
       console.error('ft_users 로드 오류:', error);
@@ -793,6 +815,11 @@ function populateFtUserSelect() {
     //   master_account → 잔액 지갑 주인               (예: immong, hilili)
     option.dataset.brand = user.brand || '';
     option.dataset.masterAccount = user.master_account || '';
+    // ── 차감 장부(invoiceManager_transactions) 신설 칼럼용 ──
+    //   username  → user_name  (계정 구분용: immong / immongbr 처럼 계정마다 다름)
+    //   master_id → master_id  (신설 예정 칼럼 — 없으면 빈 값)
+    option.dataset.username = user.username || '';
+    option.dataset.masterId = user.master_id || '';
     select.appendChild(option);
   });
 
