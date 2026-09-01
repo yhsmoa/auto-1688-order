@@ -557,15 +557,18 @@ async function saveDeductTransaction(calcData) {
   }
 
   // 선택된 유저 정보 가져오기 (ft_users)
-  //  - user_id        ← brand          (예: immong, sulon) : 기존 V1 기록과 동일 형식
-  //  - master_account ← master_account  (예: immong, hilili)
+  //  ※ user_id 는 UUID(ft_users.id) 로 저장한다.
+  //    이 테이블은 이름형(immong 등) → UUID 로 이관 완료된 상태이며,
+  //    이름을 다시 넣으면 다른 프로젝트의 월별 조회가
+  //    "invalid input syntax for type uuid" 로 통째로 실패한다.
+  //    이름 정보는 user_name(username) 에 남으므로 손실 없음.
   const ftUserSelect = document.getElementById('ftUserSelect');
   const selectedOption = ftUserSelect ? ftUserSelect.selectedOptions[0] : null;
-  const selectedUserId = selectedOption ? (selectedOption.dataset.brand || '') : '';
+  const selectedUserId = ftUserSelect ? ftUserSelect.value : '';      // ft_users.id (UUID)
   const selectedMasterAccount = selectedOption ? (selectedOption.dataset.masterAccount || '') : '';
   //  - user_name → username   (BZ=immong / BR=immongbr 처럼 계정별로 구분됨)
   //  - user_code → user_code
-  //  - master_id → master_id  (ft_users 에 칼럼이 없으면 null 로 저장)
+  //  - master_id → master_id
   const selectedUserName = selectedOption ? (selectedOption.dataset.username || '') : '';
   const selectedUserCode = selectedOption ? (selectedOption.dataset.userCode || '') : '';
   const selectedMasterId = selectedOption ? (selectedOption.dataset.masterId || '') : '';
@@ -575,8 +578,9 @@ async function saveDeductTransaction(calcData) {
     return;
   }
 
-  if (!selectedUserId) {
-    alert('선택한 유저에 brand 값이 없습니다.\nft_users.brand 를 확인해주세요.');
+  // UUID 형식 방어 — 이름형 값이 섞여 들어가는 것을 차단
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(selectedUserId)) {
+    alert(`유저 ID 형식이 올바르지 않습니다 (UUID 아님): ${selectedUserId}\n차감을 중단합니다.`);
     return;
   }
 
@@ -4693,11 +4697,22 @@ async function saveToSupabase() {
 
   try {
     // 선택된 유저 정보 가져오기 (ft_users — 구 users_api 대체)
+    //  ※ user_id 는 UUID(ft_users.id). 이 테이블은 2026-09-01 이름형 → UUID 이관 완료.
+    //    이름 정보는 user_name(username) 에 남으므로 손실 없음.
     const ftUserSelect = document.getElementById('ftUserSelect');
     const selectedOption = ftUserSelect ? ftUserSelect.selectedOptions[0] : null;
-    const selectedUserId = selectedOption ? (selectedOption.dataset.brand || '') : '';
+    const selectedUserId = ftUserSelect ? ftUserSelect.value : '';        // ft_users.id (UUID)
     const selectedUserCode = selectedOption ? (selectedOption.dataset.userCode || '') : '';
+    const selectedUserName = selectedOption ? (selectedOption.dataset.username || '') : '';
     const selectedMasterAccount = selectedOption ? (selectedOption.dataset.masterAccount || '') : '';
+    const selectedMasterId = selectedOption ? (selectedOption.dataset.masterId || '') : '';
+
+    // UUID 형식 방어 — 이름형 값이 섞여 들어가는 것을 차단
+    if (selectedUserId &&
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(selectedUserId)) {
+      alert(`유저 ID 형식이 올바르지 않습니다 (UUID 아님): ${selectedUserId}\n저장을 중단합니다.`);
+      return;
+    }
 
     // dbData만 추출하여 배열로 만들기 (사용자 정보 포함)
     const dataToInsert = orders.map(order => {
@@ -4708,9 +4723,11 @@ async function saveToSupabase() {
 
       // 선택된 사용자 정보 추가
       if (selectedUserId) {
-        order.dbData.user_id = selectedUserId;
+        order.dbData.user_id = selectedUserId;              // UUID
         order.dbData.user_code = selectedUserCode;
+        order.dbData.user_name = selectedUserName || null;  // 이름(username)
         order.dbData.master_account = selectedMasterAccount;
+        order.dbData.master_id = selectedMasterId || null;
       }
 
       // invoiceManager_1688_orders에 없는 컬럼 제외
