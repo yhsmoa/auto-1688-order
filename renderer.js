@@ -73,21 +73,22 @@ function applyOrderUnlockState() {
 // ════════════════════════════════════════════════════════════
 // user_code 그룹별 우측 패널 버튼 가시성
 // - ft_users.user_code prefix(알파벳 앞부분)로 그룹 결정
-// - HI/MB/BO → 저장 V2 + 차감 V1
-// - BZ       → 저장 V1·V2 + 차감 V1
-// 차감은 4개 그룹 모두 V1(btnDeduct → invoiceManager_transactions)으로 통일.
-//   주의: V1 차감은 ft_balances 잔액을 갱신하지 않는다(기록 전용).
-//   HI/MB 잔액은 2026-08-03 전환 이후 ft_balances에 반영되지 않으므로
-//   잔액은 invoiceManager_transactions의 충전-차감 합계로 계산해야 한다.
+//
+// 차감 (2026-09-13 신 원장 전환 — 모든 그룹):
+//   · HI/MB/BZ/BR/BO 전부 btnDeductV2 → RPC deduct_balance_and_record_transaction_v2
+//       → 신 원장 ft_user_transactions 에 기록 (잔액 정본), ft_balances 는 캐시로 갱신,
+//         ft_orders 가격 4필드 UPDATE 까지 한 트랜잭션. 구 원장(invoiceManager_transactions) 기록 안 함.
+//   · btnDeduct (V1, 구 원장 기록) 은 어느 그룹에도 노출하지 않는다 — 코드는 롤백용으로만 유지.
+//   · 신 원장이 유일한 기준. 문제 발생 시 대체 경로 없이 alert 후 중단.
 // ════════════════════════════════════════════════════════════
 // 중단 버튼(btnStop, btnStopV2)은 작업 진행 상태에 따라 자체 제어되므로
 // user_code 그룹 가시성 토글 대상에서 분리
 const USER_CODE_BUTTON_VISIBILITY = {
-  HI: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
-  MB: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
-  BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
-  BR: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
-  BO: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeduct', 'btnExportFailV2'],
+  HI: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  MB: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  BR: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  BO: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
 };
 
 // 우측 패널의 모든 버튼 ID (가시성 계산용)
@@ -371,174 +372,32 @@ async function processDeductExcel(file) {
   try {
     const data = await file.arrayBuffer();
     const workbook = XLSX.read(data, { type: 'array' });
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
 
-    // 시트를 배열로 변환 (헤더 포함, 병합 셀 처리)
-    const jsonData = XLSX.utils.sheet_to_json(worksheet, {
-      header: 1,
-      defval: '',
-      blankrows: false
-    });
-
-    if (jsonData.length < 2) {
-      alert('엑셀 파일에 데이터가 없습니다.');
-      return;
+    // ── 공용 파서 (deductParser.js) — 파싱·검증·계산은 V2 와 동일 로직 ──
+    //    검증: 주문코드 1개·현재 주문목록 포함·user_code 일치·음수/0 차단
+    const selectedUserCode =
+      document.getElementById('ftUserSelect')?.selectedOptions[0]?.dataset.userCode || '';
+    let calc;
+    try {
+      calc = DeductParser.parseDeductWorksheet(worksheet, XLSX, {
+        currentOrderCodes: collectCurrentOrderCodes(),
+        selectedUserCode,
+      });
+    } catch (e) {
+      if (e instanceof DeductParser.DeductParseError) { alert(e.message); return; }
+      throw e;
     }
+    console.log('=== 차감 계산 결과 (V1) ===', calc);
 
-    // 병합 셀 정보 가져오기
-    const merges = worksheet['!merges'] || [];
-
-    // AD열 = 29번 인덱스 (0부터 시작, A=0, B=1, ... AD=29)
-    // G열 = 6번 인덱스
-    // I열 = 8번 인덱스
-    // U열 = 20번 인덱스 (수량)
-    const AD_COL = 29;
-    const G_COL = 6;
-    const I_COL = 8;
-    const U_COL = 20;
-
-    // 현재 주문의 order_code 목록 가져오기
-    const currentOrderCodes = new Set();
-    orders.forEach(order => {
-      if (order.orderCode) {
-        currentOrderCodes.add(order.orderCode);
-      } else if (order.dbData && order.dbData.order_code) {
-        currentOrderCodes.add(order.dbData.order_code);
-      }
-    });
-
-    if (currentOrderCodes.size === 0) {
-      alert('현재 주문 데이터에 주문코드(S열)가 없습니다.');
-      return;
-    }
-
-    console.log('현재 주문코드 목록:', Array.from(currentOrderCodes));
-
-    // 엑셀 AD열에서 주문코드 추출 및 검증
-    const excelOrderCodes = new Set();
-    const mismatchedCodes = [];
-
-    // 병합 셀 값을 채우는 헬퍼 함수
-    function getMergedValue(rowIdx, colIdx, data, merges) {
-      // 현재 셀에 값이 있으면 반환
-      if (data[rowIdx] && data[rowIdx][colIdx] !== undefined && data[rowIdx][colIdx] !== '') {
-        return data[rowIdx][colIdx];
-      }
-
-      // 병합 셀인지 확인
-      for (const merge of merges) {
-        if (rowIdx >= merge.s.r && rowIdx <= merge.e.r &&
-            colIdx >= merge.s.c && colIdx <= merge.e.c) {
-          // 병합 셀의 시작 셀 값 반환
-          if (data[merge.s.r] && data[merge.s.r][merge.s.c] !== undefined) {
-            return data[merge.s.r][merge.s.c];
-          }
-        }
-      }
-
-      return '';
-    }
-
-    // 2행부터 데이터 검증 (1행은 헤더)
-    for (let i = 1; i < jsonData.length; i++) {
-      const adValue = getMergedValue(i, AD_COL, jsonData, merges);
-
-      if (adValue && adValue.toString().trim()) {
-        // "주문코드 | 주문번호(줄임) | 주문번호(줄임)" 형식에서 주문코드 추출
-        const parts = adValue.toString().split('|');
-        const orderCode = parts[0].trim();
-
-        if (orderCode) {
-          excelOrderCodes.add(orderCode);
-
-          // 현재 주문목록에 없는 코드인지 확인
-          if (!currentOrderCodes.has(orderCode)) {
-            mismatchedCodes.push(orderCode);
-          }
-        }
-      }
-    }
-
-    console.log('엑셀 주문코드 목록:', Array.from(excelOrderCodes));
-    console.log('불일치 코드:', mismatchedCodes);
-
-    // 불일치 코드가 있으면 경고
-    if (mismatchedCodes.length > 0) {
-      alert(`엑셀 파일을 확인해주세요.\n다른 주문코드(AD열)가 확인됩니다.\n\n불일치 코드: ${mismatchedCodes.join(', ')}`);
-      return;
-    }
-
-    // 주문코드가 하나도 없으면 경고
-    if (excelOrderCodes.size === 0) {
-      alert('엑셀 파일의 AD열에서 주문코드를 찾을 수 없습니다.');
-      return;
-    }
-
-    // 병합 셀의 첫 번째 행인지 확인하는 함수
-    function isFirstRowOfMerge(rowIdx, colIdx, merges) {
-      for (const merge of merges) {
-        if (rowIdx >= merge.s.r && rowIdx <= merge.e.r &&
-            colIdx >= merge.s.c && colIdx <= merge.e.c) {
-          // 병합 영역에 속함 - 첫 번째 행인지 확인
-          return rowIdx === merge.s.r;
-        }
-      }
-      // 병합 영역에 속하지 않음 - 일반 셀이므로 true 반환
-      return true;
-    }
-
-    // G열, I열, U열 합계 계산 (병합 셀: 첫 번째 행에서만 값 가져오기)
-    let delivery_fee = 0;
-    let total_I = 0;
-    let item_qty = 0;
-
-    for (let i = 1; i < jsonData.length; i++) {
-      // G열: 병합된 경우 첫 번째 행에서만 값 가져오기
-      if (isFirstRowOfMerge(i, G_COL, merges)) {
-        const gValue = getMergedValue(i, G_COL, jsonData, merges);
-        const gNum = parseFloat(String(gValue).replace(/,/g, '')) || 0;
-        delivery_fee += gNum;
-      }
-
-      // I열: 병합된 경우 첫 번째 행에서만 값 가져오기
-      if (isFirstRowOfMerge(i, I_COL, merges)) {
-        const iValue = getMergedValue(i, I_COL, jsonData, merges);
-        const iNum = parseFloat(String(iValue).replace(/,/g, '')) || 0;
-        total_I += iNum;
-      }
-
-      // U열: 수량 합계 (병합 없음)
-      const uValue = jsonData[i] && jsonData[i][U_COL];
-      const uNum = parseInt(String(uValue).replace(/,/g, '')) || 0;
-      item_qty += uNum;
-    }
-
-    // 계산 (모두 소수점 2자리까지)
-    delivery_fee = Math.round(delivery_fee * 100) / 100;
-    const price = Math.round((total_I - delivery_fee) * 100) / 100;
-    const service_fee = Math.round(price * 0.06 * 100) / 100;
-    const amount = Math.round((delivery_fee + price + service_fee) * 100) / 100;
-
-    console.log('=== 차감 계산 결과 ===');
-    console.log('delivery_fee (G열 합계):', delivery_fee);
-    console.log('total_I (I열 합계):', total_I);
-    console.log('price (I열 - G열):', price);
-    console.log('service_fee (price * 0.06):', service_fee);
-    console.log('amount (합계):', amount);
-    console.log('item_qty (U열 합계):', item_qty);
-
-    // 대표 주문코드 (첫 번째 코드 사용)
-    const orderCode = Array.from(excelOrderCodes)[0];
-
-    // Supabase에 저장
+    // Supabase 저장 (구 원장)
     await saveDeductTransaction({
-      order_code: orderCode,
-      delivery_fee: delivery_fee,
-      price: price,
-      service_fee: service_fee,
-      amount: amount,
-      item_qty: item_qty
+      order_code: calc.orderCode,
+      delivery_fee: calc.delivery_fee,
+      price: calc.price,
+      service_fee: calc.service_fee,
+      amount: calc.amount,
+      item_qty: calc.item_qty
     });
 
   } finally {
@@ -549,7 +408,27 @@ async function processDeductExcel(file) {
   }
 }
 
-// 차감 트랜잭션 Supabase 저장
+// ════════════════════════════════════════════════════════════
+// 차감 공용 헬퍼 (V1/V2)
+// ════════════════════════════════════════════════════════════
+// KST 기준 오늘 (YYYY-MM-DD)
+//   toISOString() 은 UTC 날짜라 KST 00~09시 차감이 전날로 기록되던 버그(예: 06-17 차감이 06-16) 수정
+function todayKST() {
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  return kst.toISOString().slice(0, 10);
+}
+
+// 현재 주문 목록의 주문코드 집합 — 엑셀 AD열 대조용
+function collectCurrentOrderCodes() {
+  const codes = new Set();
+  orders.forEach(order => {
+    if (order.orderCode) codes.add(order.orderCode);
+    else if (order.dbData && order.dbData.order_code) codes.add(order.dbData.order_code);
+  });
+  return codes;
+}
+
+// 차감 트랜잭션 Supabase 저장 (V1 — 구 원장 invoiceManager_transactions)
 async function saveDeductTransaction(calcData) {
   if (!supabaseClient) {
     alert('Supabase 연결이 초기화되지 않았습니다.');
@@ -584,9 +463,8 @@ async function saveDeductTransaction(calcData) {
     return;
   }
 
-  // 오늘 날짜 (YYYY-MM-DD)
-  const today = new Date();
-  const dateStr = today.toISOString().split('T')[0];
+  // 오늘 날짜 (YYYY-MM-DD, KST) — UTC 날짜 버그 수정 (todayKST 헬퍼)
+  const dateStr = todayKST();
 
   // 저장할 데이터
   const transactionData = {
@@ -5154,10 +5032,26 @@ function deductStockV2() {
   document.body.removeChild(fileInput);
 }
 
-// V2 차감 엑셀 처리 → ft_orders UPSERT
+// ════════════════════════════════════════════════════════════
+// V2 차감 — 신 원장(ft_user_transactions) 직접 기록 (2026-09-13 전환)
+//
+//   1) 선택 유저 확인 (UUID / balance_id / user_code / master_account)
+//   2) 공용 파서(deductParser.js)로 엑셀 파싱·검증·계산 — V1 과 동일 로직
+//   3) ft_orders 에서 주문코드 조회 + 소유자(user_id) 검증
+//   4) 확인 창 (금액·구성·수량)
+//   5) RPC deduct_balance_and_record_transaction_v2 — 한 트랜잭션:
+//        주문코드 중복 차단 · 이월 없는 그룹 차단 · 직전 원장 스냅샷 기준 차감 · ft_balances 캐시 갱신 · ft_orders 가격 4필드 UPDATE
+//      실패 시 아무것도 기록되지 않는다 (반쪽 상태 없음).
+//   6) 기록된 행을 재조회해 snapshot == prev − amount 검증 후 이전/이후 잔액(¥) 표시
+//
+//   원칙: 신 원장이 유일한 기준. 어느 단계든 문제가 있으면 다른 값으로 대신하지 않고
+//         즉시 alert 후 중단한다 (유저 정보 누락 / ft_orders 중복 / RPC 예외 / 검증 불일치).
+//   구 원장(invoiceManager_transactions) 에는 기록하지 않는다.
+//   금액 단위는 위안(¥) — 이전 코드의 "원" 표기는 오기였음.
+// ════════════════════════════════════════════════════════════
 async function processDeductExcelV2(file) {
   const btnDeductV2 = document.getElementById('btnDeductV2');
-  const originalText = btnDeductV2 ? btnDeductV2.textContent : 'V2 차감';
+  const originalText = btnDeductV2 ? btnDeductV2.textContent : '차감';
 
   if (btnDeductV2) {
     btnDeductV2.disabled = true;
@@ -5165,174 +5059,64 @@ async function processDeductExcelV2(file) {
   }
 
   try {
-    const data = await file.arrayBuffer();
-    const workbook = XLSX.read(data, { type: 'array' });
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-
-    const jsonData = XLSX.utils.sheet_to_json(worksheet, {
-      header: 1,
-      defval: '',
-      blankrows: false
-    });
-
-    if (jsonData.length < 2) {
-      alert('엑셀 파일에 데이터가 없습니다.');
-      return;
-    }
-
-    // 병합 셀 정보
-    const merges = worksheet['!merges'] || [];
-    const AD_COL = 29;
-    const G_COL = 6;
-    const I_COL = 8;
-    const U_COL = 20;
-
-    // ── 주문코드 검증 (기존 로직 동일) ──
-    const currentOrderCodes = new Set();
-    orders.forEach(order => {
-      if (order.orderCode) currentOrderCodes.add(order.orderCode);
-      else if (order.dbData && order.dbData.order_code) currentOrderCodes.add(order.dbData.order_code);
-    });
-
-    if (currentOrderCodes.size === 0) {
-      alert('현재 주문 데이터에 주문코드(S열)가 없습니다.');
-      return;
-    }
-
-    // 병합 셀 헬퍼 함수
-    function getMergedValue(rowIdx, colIdx, data, merges) {
-      if (data[rowIdx] && data[rowIdx][colIdx] !== undefined && data[rowIdx][colIdx] !== '') {
-        return data[rowIdx][colIdx];
-      }
-      for (const merge of merges) {
-        if (rowIdx >= merge.s.r && rowIdx <= merge.e.r &&
-            colIdx >= merge.s.c && colIdx <= merge.e.c) {
-          if (data[merge.s.r] && data[merge.s.r][merge.s.c] !== undefined) {
-            return data[merge.s.r][merge.s.c];
-          }
-        }
-      }
-      return '';
-    }
-
-    function isFirstRowOfMerge(rowIdx, colIdx, merges) {
-      for (const merge of merges) {
-        if (rowIdx >= merge.s.r && rowIdx <= merge.e.r &&
-            colIdx >= merge.s.c && colIdx <= merge.e.c) {
-          return rowIdx === merge.s.r;
-        }
-      }
-      return true;
-    }
-
-    // AD열 주문코드 추출 및 검증
-    const excelOrderCodes = new Set();
-    const mismatchedCodes = [];
-
-    for (let i = 1; i < jsonData.length; i++) {
-      const adValue = getMergedValue(i, AD_COL, jsonData, merges);
-      if (adValue && adValue.toString().trim()) {
-        const parts = adValue.toString().split('|');
-        const orderCode = parts[0].trim();
-        if (orderCode) {
-          excelOrderCodes.add(orderCode);
-          if (!currentOrderCodes.has(orderCode)) {
-            mismatchedCodes.push(orderCode);
-          }
-        }
-      }
-    }
-
-    if (mismatchedCodes.length > 0) {
-      alert(`엑셀 파일을 확인해주세요.\n다른 주문코드(AD열)가 확인됩니다.\n\n불일치 코드: ${mismatchedCodes.join(', ')}`);
-      return;
-    }
-
-    if (excelOrderCodes.size === 0) {
-      alert('엑셀 파일의 AD열에서 주문코드를 찾을 수 없습니다.');
-      return;
-    }
-
-    // ── AD열 user_code 검증 (드롭박스 선택 유저와 일치 확인) ──
-    const ftUserSelect = document.getElementById('ftUserSelect');
-    const selectedUserCode = ftUserSelect.selectedOptions[0]?.dataset.userCode || '';
-
-    if (selectedUserCode) {
-      const firstAdCode = [...excelOrderCodes][0];
-      const adPrefix = firstAdCode.replace(/^OR/, '');
-      const adUserCode = adPrefix.replace(/\d{6}.*$/, '');
-
-      if (adUserCode && adUserCode !== selectedUserCode) {
-        alert(`유저 코드가 일치하지 않습니다.\n\n엑셀 AD열: ${adUserCode}\n선택된 유저: ${selectedUserCode}`);
-        return;
-      }
-    }
-
-    // ── G열, I열, U열 합계 계산 (병합 셀 고려) ──
-    let delivery_fee = 0;
-    let total_I = 0;
-    let item_qty = 0;
-
-    for (let i = 1; i < jsonData.length; i++) {
-      if (isFirstRowOfMerge(i, G_COL, merges)) {
-        const gValue = getMergedValue(i, G_COL, jsonData, merges);
-        delivery_fee += parseFloat(String(gValue).replace(/,/g, '')) || 0;
-      }
-      if (isFirstRowOfMerge(i, I_COL, merges)) {
-        const iValue = getMergedValue(i, I_COL, jsonData, merges);
-        total_I += parseFloat(String(iValue).replace(/,/g, '')) || 0;
-      }
-      const uValue = jsonData[i] && jsonData[i][U_COL];
-      item_qty += parseInt(String(uValue).replace(/,/g, '')) || 0;
-    }
-
-    // 계산 (소수점 2자리) - 기존 차감과 동일한 로직
-    // delivery_fee = G열 합계 (배송비)
-    // total_item_price = I열 - G열 (상품가)
-    // service_fee = total_item_price * 0.06 (수수료 6%)
-    // total_amount = total_item_price + service_fee + delivery_fee + extra_fee
-    delivery_fee = Math.round(delivery_fee * 100) / 100;
-    const total_item_price = Math.round((total_I - delivery_fee) * 100) / 100;
-    const service_fee = Math.round(total_item_price * 0.06 * 100) / 100;
-    const total_amount = Math.round((total_item_price + service_fee + delivery_fee) * 100) / 100;
-
-    console.log('=== V2 차감 계산 결과 ===');
-    console.log('delivery_fee (G열 배송비):', delivery_fee);
-    console.log('total_item_price (I-G 상품가):', total_item_price);
-    console.log('service_fee (6%):', service_fee);
-    console.log('total_amount (합계):', total_amount);
-
-    // ── 선택된 ft_user 정보 가져오기 (ftUserSelect는 위에서 이미 선언됨) ──
-    const selectedOption = ftUserSelect ? ftUserSelect.selectedOptions[0] : null;
-
-    if (!ftUserSelect || !ftUserSelect.value) {
-      alert('ft_users에서 사용자를 선택해주세요.');
-      return;
-    }
-
-    const userId = ftUserSelect.value;
-    const balanceId = selectedOption.dataset.balanceId;
-    const venderName = selectedOption.dataset.venderName || '';
-
-    if (!balanceId) {
-      alert('선택된 사용자에게 balance_id가 없습니다.');
-      return;
-    }
-
-    // ── ft_orders UPSERT (order_no 기준) ──
-    const orderCode = Array.from(excelOrderCodes)[0];
-
     if (!supabaseClient) {
       alert('Supabase 연결이 초기화되지 않았습니다.');
       return;
     }
 
-    // order_no로 기존 레코드 조회 (중복 행 있어도 에러 안 나게 배열로 받음)
+    // ── 1) 선택 유저 ──
+    const ftUserSelect = document.getElementById('ftUserSelect');
+    const selectedOption = ftUserSelect ? ftUserSelect.selectedOptions[0] : null;
+    if (!ftUserSelect || !ftUserSelect.value || !selectedOption) {
+      alert('ft_users에서 사용자를 선택해주세요.');
+      return;
+    }
+    const userId        = ftUserSelect.value;                                  // ft_users.id
+    const balanceId     = selectedOption.dataset.balanceId || '';              // ft_users.balance_id
+    const venderName    = selectedOption.dataset.venderName || '';             // 판매자명 (대체값 없음)
+    const userCode      = selectedOption.dataset.userCode || '';
+    const masterAccount = selectedOption.dataset.masterAccount || '';
+
+    // ── 유저 정보가 하나라도 비면 중단 — 다른 값으로 대신 채우지 않는다 ──
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_RE.test(userId)) {
+      alert(`유저 ID 형식이 올바르지 않습니다 (UUID 아님): ${userId}\n차감을 중단합니다.`);
+      return;
+    }
+    if (!UUID_RE.test(balanceId)) {
+      alert('선택된 사용자에게 balance_id가 없습니다.\n차감을 중단합니다. ft_users 를 확인하세요.');
+      return;
+    }
+    if (!venderName || !userCode || !masterAccount) {
+      alert(
+        `유저 정보가 비어 있어 차감을 중단합니다.\n\n` +
+        `판매자명: ${venderName || '(없음)'}\n유저코드: ${userCode || '(없음)'}\n마스터계정: ${masterAccount || '(없음)'}\n\n` +
+        `ft_users 의 vender_name / user_code / master_account 를 채운 뒤 다시 시도하세요.`
+      );
+      return;
+    }
+
+    // ── 2) 엑셀 파싱·검증·계산 (공용 파서) ──
+    const data = await file.arrayBuffer();
+    const workbook = XLSX.read(data, { type: 'array' });
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    let calc;
+    try {
+      calc = DeductParser.parseDeductWorksheet(worksheet, XLSX, {
+        currentOrderCodes: collectCurrentOrderCodes(),
+        selectedUserCode: userCode,
+      });
+    } catch (e) {
+      if (e instanceof DeductParser.DeductParseError) { alert(e.message); return; }
+      throw e;
+    }
+    console.log('=== V2 차감 계산 결과 ===', calc);
+
+    // ── 3) ft_orders 조회 + 소유자 검증 ──
     const { data: existingOrders, error: findError } = await supabaseClient
       .from('ft_orders')
-      .select('id')
-      .eq('order_no', orderCode)
+      .select('id, user_id, status')
+      .eq('order_no', calc.orderCode)
       .order('created_at', { ascending: false });
 
     if (findError) {
@@ -5340,150 +5124,108 @@ async function processDeductExcelV2(file) {
       alert(`ft_orders 조회 실패: ${findError.message}`);
       return;
     }
-
     if (!existingOrders || existingOrders.length === 0) {
-      alert(`ft_orders에 주문코드(${orderCode})가 없습니다.\n먼저 V2 저장을 진행해주세요.`);
+      alert(`ft_orders에 주문코드(${calc.orderCode})가 없습니다.\n먼저 V2 저장을 진행해주세요.`);
       return;
     }
-
+    // 중복 행이 있으면 어느 것을 쓸지 임의로 정하지 않고 중단 — 관리자가 정리한 뒤 진행
     if (existingOrders.length > 1) {
-      console.warn(`ft_orders에 order_no(${orderCode}) 중복 ${existingOrders.length}건 — 최신 행 사용`);
-    }
-
-    const existingOrder = existingOrders[0]; // 최신 행 사용
-
-    // UPDATE (가격 정보만 업데이트)
-    const updateData = {
-      delivery_fee: delivery_fee,
-      total_item_price: total_item_price,
-      service_fee: service_fee,
-      total_amount: total_amount
-    };
-
-    console.log('ft_orders UPDATE 데이터:', updateData);
-
-    const { data: updatedOrder, error: updateError } = await supabaseClient
-      .from('ft_orders')
-      .update(updateData)
-      .eq('id', existingOrder.id)
-      .select();
-
-    if (updateError) {
-      console.error('ft_orders 업데이트 오류:', updateError);
-      alert(`ft_orders 업데이트 실패: ${updateError.message}`);
-      return;
-    }
-
-    // 검증
-    const { data: verifyData, error: verifyError } = await supabaseClient
-      .from('ft_orders')
-      .select('delivery_fee, total_item_price, service_fee, total_amount')
-      .eq('id', existingOrder.id)
-      .single();
-
-    if (verifyError || !verifyData) {
-      alert('V2 차감 검증 실패');
-      return;
-    }
-
-    const isValid =
-      parseFloat(verifyData.delivery_fee) === delivery_fee &&
-      parseFloat(verifyData.total_item_price) === total_item_price &&
-      parseFloat(verifyData.service_fee) === service_fee &&
-      parseFloat(verifyData.total_amount) === total_amount;
-
-    if (!isValid) {
-      console.error('데이터 불일치:', { saved: verifyData, expected: { delivery_fee, total_item_price, service_fee, total_amount } });
-      alert('V2 차감 검증 실패: 저장된 데이터가 일치하지 않습니다.');
-      return;
-    }
-
-    console.log('✓ ft_orders 업데이트 및 검증 완료');
-
-    // ── ft_user_transactions 중복 검사 (같은 balance_id + amount + 오늘 날짜) ──
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const { data: existingTx, error: txCheckError } = await supabaseClient
-      .from('ft_user_transactions')
-      .select('id, created_at')
-      .eq('balance_id', balanceId)
-      .eq('amount', total_amount)
-      .eq('type', 'out')
-      .eq('category', '구매')
-      .gte('created_at', todayStart.toISOString())
-      .limit(1);
-
-    if (txCheckError) {
-      console.error('거래 중복 검사 오류:', txCheckError);
-    }
-
-    if (existingTx && existingTx.length > 0) {
-      const confirmDuplicate = confirm(
-        `동일한 차감 내역이 이미 존재합니다.\n` +
-        `금액: ${total_amount.toLocaleString()}원\n` +
-        `시간: ${new Date(existingTx[0].created_at).toLocaleString()}\n\n` +
-        `중복 차감을 진행하시겠습니까?`
+      alert(
+        `ft_orders에 주문코드(${calc.orderCode})가 ${existingOrders.length}건 중복되어 있어 차감을 중단합니다.\n` +
+        `관리자가 중복 행을 정리한 뒤 다시 시도하세요.`
       );
-      if (!confirmDuplicate) {
-        alert('V2 차감이 취소되었습니다.');
-        return;
-      }
+      return;
+    }
+    const order = existingOrders[0];
+    if (order.user_id && order.user_id !== userId) {
+      alert(`이 주문(${calc.orderCode})은 선택된 유저의 주문이 아닙니다.\n\n주문 user_id: ${order.user_id}\n선택 유저: ${userId}`);
+      return;
     }
 
-    // ── ft_balances 차감 + ft_user_transactions 기록 (RPC) ──
+    // ── 4) 확인 ──
+    const proceed = confirm(
+      `차감을 진행합니다.\n\n` +
+      `주문코드: ${calc.orderCode}\n` +
+      `사업자: ${venderName} (${userCode})\n` +
+      `차감액: ¥${calc.amount.toLocaleString()}\n` +
+      `  상품가 ¥${calc.price.toLocaleString()} + 배송비 ¥${calc.delivery_fee.toLocaleString()} + 수수료 ¥${calc.service_fee.toLocaleString()}\n` +
+      `수량: ${calc.item_qty}개 / 1688 주문 ${calc.orderNos1688.length}건\n\n` +
+      `진행할까요?`
+    );
+    if (!proceed) {
+      alert('차감이 취소되었습니다.');
+      return;
+    }
+
+    // ── 5) RPC v2 (한 트랜잭션) ──
     const { data: rpcResult, error: rpcError } = await supabaseClient
-      .rpc('deduct_balance_and_record_transaction', {
-        p_balance_id:    balanceId,
-        p_user_id:       userId,
-        p_vender_name:   venderName,
-        p_amount:        total_amount,
-        p_qty:           item_qty,
-        p_item_amount:   total_item_price,
-        p_shipping_fee:  delivery_fee,
-        p_service_fee:   service_fee,
-        p_other_fee:     0,
-        p_description:   orderCode + ' 주문',
-        p_reference_id:  null,
-        p_order_no_1688: null,
-        p_admin_note:    null
+      .rpc('deduct_balance_and_record_transaction_v2', {
+        p_balance_id:     balanceId,
+        p_user_id:        userId,
+        p_vender_name:    venderName,
+        p_amount:         calc.amount,
+        p_qty:            calc.item_qty,
+        p_item_amount:    calc.price,
+        p_shipping_fee:   calc.delivery_fee,
+        p_service_fee:    calc.service_fee,
+        p_other_fee:      0,
+        p_description:    calc.orderCode + ' 주문',
+        p_reference_id:   calc.orderCode,                                   // 중복 방지 키
+        p_order_no_1688:  calc.orderNos1688.length ? calc.orderNos1688.join(', ') : null,
+        p_admin_note:     null,
+        p_master_account: masterAccount || null,
+        p_user_code:      userCode || null,
+        p_order_id:       order.id,                                         // ft_orders 가격 4필드 UPDATE + source_ids
       });
 
     if (rpcError) {
-      console.error('RPC 차감 오류:', rpcError);
-      alert(`ft_orders는 업데이트됨.\n하지만 잔액 차감 실패: ${rpcError.message}`);
+      console.error('RPC v2 차감 오류:', rpcError);
+      const msg = String(rpcError.message || '');
+      if (msg.includes('duplicate deduction')) {
+        alert(`이미 차감된 주문코드입니다: ${calc.orderCode}\n\n원장에 같은 주문코드의 구매 차감이 존재합니다.\n수정이 필요하면 관리 화면에서 보정행으로 처리하세요.`);
+      } else {
+        alert(`차감 실패 — 아무것도 기록되지 않았습니다.\n\n${msg}`);
+      }
+      return;
+    }
+    console.log('✓ RPC v2 결과:', rpcResult);
+
+    // ── 6) 재조회 검증: snapshot == prev − amount ──
+    const { data: txRow, error: txErr } = await supabaseClient
+      .from('ft_user_transactions')
+      .select('id, amount, balance_snapshot, reference_id, applied_date')
+      .eq('id', rpcResult.transaction_id)
+      .single();
+
+    const prevBalance = Number(rpcResult.prev_balance);
+    const newBalance  = Number(rpcResult.new_balance);
+    const expected    = Math.round((prevBalance - calc.amount) * 100) / 100;
+    const snapOk = !txErr && txRow
+      && Math.abs(Number(txRow.balance_snapshot) - expected) < 0.005
+      && Math.abs(newBalance - Number(txRow.balance_snapshot)) < 0.005;
+    // 검증 불일치 = 원장 이상 신호. 기록은 이미 커밋됐으므로 되돌리지 않되,
+    // 완료로 처리하지 않고 즉시 알린다. 관리자가 확인하기 전까지 후속 작업을 진행하지 않는다.
+    if (!snapOk) {
+      console.error('V2 차감 검증 불일치', { rpcResult, txRow, expected, txErr });
+      alert(
+        `⚠ 차감 기록은 됐으나 검증에 실패했습니다. 후속 작업을 중단합니다.\n\n` +
+        `주문코드: ${calc.orderCode}\n거래ID: ${rpcResult.transaction_id}\n` +
+        `기대 잔액: ¥${expected.toLocaleString()}\n` +
+        `원장 스냅샷: ${txRow ? '¥' + Number(txRow.balance_snapshot).toLocaleString() : '(재조회 실패: ' + (txErr?.message || '') + ')'}\n\n` +
+        `관리자에게 거래ID와 함께 즉시 알려주세요.`
+      );
       return;
     }
 
-    console.log('✓ RPC 차감 결과:', rpcResult);
-
-    // ── 검증: ft_balances 잔액 확인 ──
-    const { data: verifyBalance, error: verifyBalanceError } = await supabaseClient
-      .from('ft_balances')
-      .select('balance')
-      .eq('id', balanceId)
-      .single();
-
-    if (verifyBalanceError || !verifyBalance) {
-      console.error('잔액 검증 조회 오류:', verifyBalanceError);
-      alert('차감은 완료되었으나 잔액 검증 조회에 실패했습니다.');
-    } else {
-      const balanceMatch = parseFloat(verifyBalance.balance) === rpcResult.new_balance;
-      if (!balanceMatch) {
-        console.warn('잔액 불일치:', { db: verifyBalance.balance, expected: rpcResult.new_balance });
-      }
-      console.log('✓ 잔액 검증:', balanceMatch ? '일치' : '불일치');
-    }
-
-    // ── 완료 ──
-    alert(`V2 차감 완료!\n\n` +
-      `주문코드: ${orderCode}\n` +
-      `차감액: ${total_amount.toLocaleString()}원\n` +
-      `상품가: ${total_item_price.toLocaleString()}원\n` +
-      `배송비: ${delivery_fee.toLocaleString()}원\n` +
-      `수수료: ${service_fee.toLocaleString()}원\n` +
-      `수량: ${item_qty}개\n\n` +
-      `잔액: ${rpcResult.new_balance.toLocaleString()}원\n` +
-      `거래ID: ${rpcResult.transaction_id}`);
+    alert(
+      `차감 완료\n\n` +
+      `주문코드: ${calc.orderCode}\n` +
+      `차감액: ¥${calc.amount.toLocaleString()}\n` +
+      `이전 잔액: ¥${prevBalance.toLocaleString()}\n` +
+      `이후 잔액: ¥${newBalance.toLocaleString()}\n` +
+      `적용일: ${rpcResult.applied_date}\n` +
+      `거래ID: ${rpcResult.transaction_id}`
+    );
 
     stepStatus.deduct = true;
     updateButtonSteps();

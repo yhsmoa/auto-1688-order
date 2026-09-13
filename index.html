@@ -1464,8 +1464,9 @@
 
       <!-- 그룹 7: 차감 -->
       <div class="rp-group">
+        <!-- 차감: 모든 그룹 V2(신 원장) 만 노출 (USER_CODE_BUTTON_VISIBILITY). V1 은 롤백용으로 코드만 유지 -->
         <button class="btn-step btn-step-deduct" id="btnDeduct" onclick="deductStock()">차감</button>
-        <button class="btn-step btn-step-deduct" id="btnDeductV2" onclick="deductStockV2()">V2 차감</button>
+        <button class="btn-step btn-step-deduct" id="btnDeductV2" onclick="deductStockV2()">차감 (신 원장)</button>
       </div>
       <div class="rp-divider">⬇</div>
 
@@ -1822,6 +1823,7 @@
 
   <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="deductParser.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
