@@ -33,7 +33,14 @@
     "files": [
       "**/*",
       "!node_modules/**/playwright/.local-browsers/**/*",
-      "!dist/**/*"
+      "!dist/**/*",
+      "!*.xlsx",
+      "!api_capture.json",
+      "!nul",
+      "!.claude/**",
+      "!docs/**",
+      "!sql/**",
+      "!scripts/**"
     ],
     "extraResources": [
       {
