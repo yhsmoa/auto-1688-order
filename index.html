@@ -245,6 +245,11 @@
     }
 
     /* 탭별 버튼 섹션 */
+    /* 스크립트 준비 전(body.ui-loading)에는 우측 버튼을 숨김
+       — HTML 기본값으로 버튼이 보였다가 JS가 숨기면서 깜빡이던 현상 제거.
+       renderer.js 가 초기 가시성 계산을 마친 뒤 ui-loading 을 제거한다. */
+    body.ui-loading .rp-section { visibility: hidden; }
+
     .rp-section {
       display: flex;
       flex-direction: column;
@@ -346,6 +351,25 @@
     .btn-step-deduct.completed {
       background: #17a2b8;
     }
+
+    /* 검수 결과 배너 — 잘못 담긴 주문 (주문 목록 상단) */
+    .review-extras { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid #eee; }
+    .review-extras.ok    { background: #eaf7ee; color: #1e7e34; }
+    .review-extras.warn  { background: #fff4e5; color: #7a4b00; }
+    .review-extras.stale { background: #f4f4f4; color: #555; }
+    .review-extras .rx-head { margin-bottom: 8px; }
+    .review-extras .rx-hint { display: block; margin-top: 4px; font-size: 12px; color: #9a5b00; }
+    .review-extras .rx-stale { margin-top: 6px; font-size: 12px; color: #555; }
+    .review-extras .rx-table { width: 100%; border-collapse: collapse; background: #fff; font-size: 12px; }
+    .review-extras .rx-table th, .review-extras .rx-table td { padding: 5px 8px; border: 1px solid #f0dcc0; text-align: left; vertical-align: top; }
+    .review-extras .rx-table th { background: #fbe9d0; font-weight: 600; }
+    .review-extras .rx-num { text-align: right; white-space: nowrap; }
+    .review-extras .rx-excess { color: #c0392b; font-weight: 700; }
+    .review-extras .rx-sub { color: #888; font-size: 11px; }
+    .review-extras .rx-kind { white-space: nowrap; font-weight: 600; }
+    .review-extras .rx-cancelled { color: #c0392b; }
+    .review-extras .rx-excess.rx-kind { color: #b35c00; }
+    .review-extras .rx-not_in_list { color: #8e44ad; }
 
     .order-list {
       background: white;
@@ -1400,7 +1424,7 @@
     }
   </style>
 </head>
-<body>
+<body class="ui-loading">
   <!-- ─── 우측 고정 액션 패널 ─── -->
   <div class="right-panel" id="rightPanel">
 
@@ -1533,9 +1557,12 @@
         <div id="userControls" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
           <!-- 패스워드 입력폼 -->
           <label style="font-size: 13px; color: #555;">패스워드:</label>
-          <input type="password" id="orderPwInput"
+          <!-- 스크립트 준비 전에는 비활성(disabled) — 준비되기 전에 입력하면
+               onPasswordInput 이 아직 없어 입력이 무시되던 문제 방지.
+               renderer.js 초기화가 끝나면 활성화된다. -->
+          <input type="password" id="orderPwInput" disabled
                  style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; width: 130px;"
-                 placeholder="패스워드 입력"
+                 placeholder="준비 중…"
                  oninput="onPasswordInput()" autocomplete="off">
 
           <!-- ft_users 드롭박스 (vender_name + user_code) — 패스워드 통과 전 비활성
@@ -1651,6 +1678,8 @@
 
       <!-- ─── 공유 주문 목록 영역 (주문/V2 주문 탭에서 공통 사용) ─── -->
       <div class="order-list" id="sharedOrderList">
+        <!-- 검수 결과: 잘못 담긴 주문 배너 (renderReviewExtras 가 채움) -->
+        <div id="reviewExtrasBanner" class="review-extras" style="display:none;"></div>
         <h3>
           <span>주문 목록 <span id="orderCount"></span></span>
           <div class="order-list-header-buttons">
@@ -1821,8 +1850,10 @@
     <button class="orange-nav-btn" onclick="navigateOrangeRows(1)" title="다음 확인 필요 항목">▼</button>
   </div>
 
-  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- 라이브러리는 로컬(node_modules)에서 로드 — CDN 다운로드 대기 제거, 오프라인 동작
+       (package.json dependencies 에 포함되어 설치 파일에도 함께 들어감) -->
+  <script src="node_modules/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="node_modules/@supabase/supabase-js/dist/umd/supabase.js"></script>
   <script src="deductParser.js"></script>
   <script src="renderer.js"></script>
 </body>

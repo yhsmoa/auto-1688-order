@@ -1,7 +1,12 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
-const { processOrders, stopProcessing } = require('./automation');
 const { autoUpdater } = require('electron-updater');
+
+// automation.js(Playwright)는 require 만으로 ~2초가 걸리므로 시작 시 로드하지 않고
+// 자동화 기능이 처음 쓰일 때 로드한다 (Node 모듈 캐시로 두 번째부터는 즉시 반환).
+function automation() {
+  return require('./automation');
+}
 
 // 빌드된 앱에서 .env 파일 경로 설정
 const envPath = app.isPackaged
@@ -68,10 +73,19 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1000,
     height: 700,
+    show: false,   // 렌더링이 끝난 뒤 표시 (빈 창·깜빡임 방지)
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
+    }
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+    // 업데이트 확인은 화면이 뜬 뒤로 미룸 (빌드된 앱에서만)
+    if (app.isPackaged) {
+      setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 3000);
     }
   });
 
@@ -150,11 +164,7 @@ function createMenu() {
 app.whenReady().then(() => {
   createWindow();
   createMenu();
-
-  // 빌드된 앱에서만 업데이트 확인
-  if (app.isPackaged) {
-    autoUpdater.checkForUpdates();
-  }
+  // 업데이트 확인은 createWindow 의 ready-to-show 이후에 수행
 });
 
 app.on('window-all-closed', () => {
@@ -171,7 +181,7 @@ app.on('activate', () => {
 
 // 주문 처리 IPC
 ipcMain.handle('process-orders', async (event, orders) => {
-  return await processOrders(orders, (progress) => {
+  return await automation().processOrders(orders, (progress) => {
     // 진행 상황을 렌더러로 전송
     mainWindow.webContents.send('order-progress', progress);
   });
@@ -188,7 +198,7 @@ ipcMain.handle('start-review', async (event, orders) => {
 
 // 주문 중단 IPC
 ipcMain.on('stop-processing', () => {
-  stopProcessing();
+  automation().stopProcessing();
 });
 
 // 참조코드 입력 IPC

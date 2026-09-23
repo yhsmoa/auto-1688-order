@@ -1093,6 +1093,46 @@ async function startReview(orders, onReviewProgress) {
   // 가장 최근에 사용한 페이지 찾기
   let page = pages[pages.length - 1];
 
+  // ── [조사용] 장바구니 API 응답 수집 ──
+  // 검수를 스크롤/DOM 방식 대신 네트워크 방식으로 바꾸기 위해, 장바구니 페이지가 부르는
+  // JSON API 후보를 파일로 기록한다. (URL·상태·응답 최상위 키·앞부분 미리보기)
+  //  → 저장 위치: <userData>/cart-api-capture.json  (예: C:\Users\<이름>\AppData\Roaming\auto-1688-order\)
+  //  엔드포인트가 확정되면 CART_API_CAPTURE 를 false 로 바꿔 끈다.
+  const CART_API_CAPTURE = true;
+  const apiCapture = [];
+  const onCaptureResponse = async (res) => {
+    try {
+      const url = res.url();
+      const type = res.request().resourceType();
+      if (!['xhr', 'fetch', 'script'].includes(type)) return;
+      if (!/mtop|cart|purchase|astore|jsonp|callback/i.test(url)) return;
+      if (apiCapture.length >= 300) return;
+      const headers = res.headers();
+      const entry = { url, status: res.status(), type, contentType: headers['content-type'] || '' };
+      try {
+        const text = await res.text();
+        entry.size = text.length;
+        entry.preview = text.slice(0, 1500);
+        // JSONP(callback({...})) 또는 JSON 이면 최상위 키 기록
+        const jsonText = text.replace(/^[^{[]*/, '').replace(/[^}\]]*$/, '');
+        try { const j = JSON.parse(jsonText); entry.topKeys = Array.isArray(j) ? ['<array>'] : Object.keys(j).slice(0, 30); } catch (_) {}
+      } catch (_) { /* 본문 읽기 실패는 무시 */ }
+      apiCapture.push(entry);
+    } catch (_) { /* 수집 실패는 검수에 영향 주지 않음 */ }
+  };
+  const flushApiCapture = () => {
+    if (!CART_API_CAPTURE) return;
+    try { page.off('response', onCaptureResponse); } catch (_) {}
+    try {
+      let dir;
+      try { dir = require('electron').app.getPath('userData'); } catch (_) { dir = require('os').tmpdir(); }
+      const file = path.join(dir, 'cart-api-capture.json');
+      fs.writeFileSync(file, JSON.stringify({ capturedAt: new Date().toISOString(), count: apiCapture.length, entries: apiCapture }, null, 2));
+      console.log(`[cart-api-capture] ${apiCapture.length} responses → ${file}`);
+    } catch (e) { console.log('[cart-api-capture] write failed:', e.message); }
+  };
+  if (CART_API_CAPTURE) page.on('response', onCaptureResponse);
+
   try {
     // 1. 카트 페이지로 직접 이동
     console.log('Step 1: Navigating to cart page...');
@@ -1222,6 +1262,7 @@ async function startReview(orders, onReviewProgress) {
     console.log(`Matched: ${comparisonResults.matched}, Mismatched: ${comparisonResults.mismatched}, Not Found: ${comparisonResults.notFound}`);
     console.log('========================================');
 
+    flushApiCapture();   // [조사용] 장바구니 API 응답 기록 저장
     return { success: true, cartItems, comparisonResults };
 
   } catch (error) {
@@ -1241,10 +1282,19 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
   // 결과를 일괄 저장할 배열
   const allResults = [];
 
+  // 취소된 행 판정 (렌더러 규칙 1: 취소 사유가 있는 행은 finalComplete=false)
+  const isCancelledOrder = (o) =>
+    o.finalComplete === false || !!(o.reason && o.reasonType !== 'other');
+  const itemNoOf = (o) => (o.dbData && o.dbData.order_number) || o.orderNo || '';
+
   // 1. 주문 데이터를 offer_id + 색상 + 사이즈로 그룹화
+  //    - 활성 행(orderIndices/totalQuantity)과 취소 행(cancelledIndices)을 분리해 집계.
+  //      취소 행은 수량 합계에서 빼야 "장바구니에 남은 초과분"이 드러난다.
   const orderGroups = {};
   orders.forEach((order, index) => {
-    const orderUrlMatch = order.url.match(/offer\/(\d+)\.html/);
+    if (order.isInvalid) return;   // 무효 행(필수값 누락)은 검수 대상 아님
+
+    const orderUrlMatch = (order.url || '').match(/offer\/(\d+)\.html/);
     const offerId = orderUrlMatch ? orderUrlMatch[1] : '';
 
     if (!offerId) {
@@ -1266,19 +1316,67 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
         offerId,
         color: order.color,
         size: order.size,
-        totalQuantity: 0,
-        orderIndices: []
+        totalQuantity: 0,        // 활성 행 수량 합계
+        orderIndices: [],        // 활성 행
+        cancelledIndices: [],    // 취소 행
+        cancelledItemNos: []
       };
     }
 
-    orderGroups[groupKey].totalQuantity += order.quantity;
-    orderGroups[groupKey].orderIndices.push(index);
+    if (isCancelledOrder(order)) {
+      orderGroups[groupKey].cancelledIndices.push(index);
+      orderGroups[groupKey].cancelledItemNos.push(itemNoOf(order));
+    } else {
+      orderGroups[groupKey].totalQuantity += order.quantity;
+      orderGroups[groupKey].orderIndices.push(index);
+    }
   });
 
   console.log(`  Grouped into ${Object.keys(orderGroups).length} unique option groups`);
 
   // 매칭된 카트 아이템 추적용 Set
   const matchedCartItems = new Set();
+
+  // ── 잘못 담긴 주문 수집: 장바구니에는 있지만 주문돼서는 안 되는 것 ──
+  //   kind: 'cancelled'   취소했는데 장바구니에 그대로 남음
+  //         'excess'      같은 옵션의 장바구니 수량이 활성 주문 수량보다 많음
+  //         'not_in_list' 주문 목록에 없는 상품이 장바구니에 있음
+  //   (V2 참조코드는 장바구니 전체선택으로 결제하므로, 여기 남은 것은 전부 결제된다)
+  const extraItems = [];
+  const cartItemLabel = (ci) => ({
+    sellerName: ci.sellerName || '', productName: ci.productName || '', productUrl: ci.productUrl || '',
+    offerId: ci.offerId || '', color: ci.color || '', size: ci.size || ''
+  });
+
+  // 취소 행 결과 기록. 장바구니에 남아 있으면 불일치('cancelled') + extra, 없으면 정상.
+  //  - 같은 옵션의 활성 행이 있으면(장바구니 한 줄로 합산됨) 수량 초과분으로 판단
+  function markCancelledRows(group, cartItem) {
+    if (group.cancelledIndices.length === 0) return;
+    const onlyCancelled = group.orderIndices.length === 0;
+    const inCart = !!cartItem && (onlyCancelled || cartItem.quantity > group.totalQuantity);
+
+    if (inCart) {
+      const excess = onlyCancelled ? cartItem.quantity : cartItem.quantity - group.totalQuantity;
+      group.cancelledIndices.forEach(idx => allResults.push({
+        index: idx,
+        reviewStatus: 'mismatch',
+        reviewResult: { mismatches: [{ field: 'cancelled', cart: cartItem.quantity, order: 0 }], cartItem, cancelled: true }
+      }));
+      extraItems.push({
+        kind: onlyCancelled ? 'cancelled' : 'excess',
+        ...cartItemLabel(cartItem),
+        cartQty: cartItem.quantity, orderQty: group.totalQuantity, excess,
+        itemNos: group.cancelledItemNos
+      });
+      console.log(`    CANCELLED BUT STILL IN CART - ${group.cancelledItemNos.join(', ')} (excess ${excess})`);
+    } else {
+      group.cancelledIndices.forEach(idx => allResults.push({
+        index: idx,
+        reviewStatus: 'ok',
+        reviewResult: { cancelled: true, message: '취소 — 장바구니 없음' }
+      }));
+    }
+  }
 
   // 2. 각 그룹별로 카트 데이터와 비교
   Object.values(orderGroups).forEach(group => {
@@ -1308,6 +1406,7 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
           reviewResult: { notFound: true, message: '카트에 없음' }
         });
       });
+      markCancelledRows(group, null);   // 취소 행: 장바구니에 없음 = 정상
       return;
     }
 
@@ -1411,6 +1510,7 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
           reviewResult: { notFound: true, message: '카트에 없음' }
         });
       });
+      markCancelledRows(group, null);   // 취소 행: 장바구니에 없음 = 정상
       return;
     }
 
@@ -1430,13 +1530,17 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
           reviewResult: { notFound: true, message: '체크 오류', cartItem }
         });
       });
+      markCancelledRows(group, cartItem);   // 체크가 안 돼도 장바구니에 있으면 전체선택 시 결제됨
       return;
     }
+
+    // 취소 행 결과 기록 (장바구니에 남았는지 여부)
+    markCancelledRows(group, cartItem);
 
     // 비교 수행
     const mismatches = [];
 
-    // 수량 비교 (그룹 전체 수량과 카트 수량 비교)
+    // 수량 비교 (그룹의 활성 주문 수량과 카트 수량 비교)
     if (cartItem.quantity !== totalQuantity) {
       mismatches.push({
         field: 'quantity',
@@ -1444,6 +1548,18 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
         order: totalQuantity
       });
       console.log(`    Quantity MISMATCH - Cart: ${cartItem.quantity}, Order Total: ${totalQuantity}`);
+
+      // 장바구니가 더 많고 취소 행으로 설명되지 않는 초과분 → 잘못 담긴 주문으로 보고
+      // (취소 행이 있는 그룹의 초과분은 markCancelledRows 가 이미 기록)
+      if (cartItem.quantity > totalQuantity && group.cancelledIndices.length === 0 && orderIndices.length > 0) {
+        extraItems.push({
+          kind: 'excess',
+          ...cartItemLabel(cartItem),
+          cartQty: cartItem.quantity, orderQty: totalQuantity,
+          excess: cartItem.quantity - totalQuantity,
+          itemNos: orderIndices.map(i => itemNoOf(orders[i]))
+        });
+      }
     }
 
     // 색상 비교 (엄격한 매칭)
@@ -1491,13 +1607,27 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
     }
   });
 
-  console.log(`\n  Comparison complete: ${matched} matched, ${mismatched} mismatched, ${notFound} not found`);
+  // 3. 역방향 검사: 주문 목록의 어떤 행과도 짝이 안 맞는 장바구니 상품
+  //    (이전 세션 잔여물 등 — 전체선택 결제 시 함께 결제되므로 반드시 보고)
+  //    주문 불가(isDisabled) 상품은 결제되지 않으므로 제외
+  cartItems.forEach(ci => {
+    if (matchedCartItems.has(ci) || ci.isDisabled) return;
+    extraItems.push({
+      kind: 'not_in_list',
+      ...cartItemLabel(ci),
+      cartQty: ci.quantity, orderQty: 0, excess: ci.quantity,
+      itemNos: []
+    });
+    console.log(`    NOT IN ORDER LIST - cart has offer=${ci.offerId} ${ci.color}/${ci.size} x${ci.quantity}`);
+  });
+
+  console.log(`\n  Comparison complete: ${matched} matched, ${mismatched} mismatched, ${notFound} not found, ${extraItems.length} extra in cart`);
 
   // 모든 결과를 한 번에 전송 (batch 모드)
   console.log(`  Sending ${allResults.length} results in batch mode...`);
   onReviewProgress({ batch: true, results: allResults });
 
-  return { matched, mismatched, notFound };
+  return { matched, mismatched, notFound, extraItems };
 }
 
 // 사이즈 매칭 체크 함수

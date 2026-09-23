@@ -609,6 +609,18 @@ window.addEventListener('DOMContentLoaded', () => {
   // 초기 상태: 패스워드 잠김 → 사용자/유저 드롭박스 비활성
   applyOrderUnlockState();
 
+  // ── 초기 가시성 계산이 끝났으므로 우측 버튼 표시 허용 (깜빡임 방지용 클래스 제거) ──
+  document.body.classList.remove('ui-loading');
+
+  // ── 패스워드 입력 활성화 + 준비 전에 입력된 값이 있으면 즉시 판정 ──
+  //   (스크립트 준비 전에는 disabled 라 입력이 안 되지만, 자동완성/복원 값 대비)
+  const pwInput = document.getElementById('orderPwInput');
+  if (pwInput) {
+    pwInput.disabled = false;
+    pwInput.placeholder = '패스워드 입력';
+    if (pwInput.value) onPasswordInput();
+  }
+
   if (window.api && window.supabase) {
     const SUPABASE_URL = window.api.getEnv('SUPABASE_URL');
     const SUPABASE_SERVICE_ROLE_KEY = window.api.getEnv('SUPABASE_SERVICE_ROLE_KEY');
@@ -642,6 +654,10 @@ async function loadFtUsers() {
   // (칼럼 하나 때문에 쿼리 전체가 실패해 드롭박스가 비는 것을 방지)
   const BASE_COLS = 'id, full_name, username, user_code, phone, address, balance_id, vender_name, brand, master_account';
 
+  // 로딩 중임을 드롭박스에 표시 (패스워드를 먼저 통과해도 "빈 목록"이 아니라 로딩 중으로 보이게)
+  const selectEl = document.getElementById('ftUserSelect');
+  if (selectEl && selectEl.options.length > 0) selectEl.options[0].textContent = '유저 불러오는 중…';
+
   try {
     let { data, error } = await supabaseClient
       .from('ft_users')
@@ -658,11 +674,13 @@ async function loadFtUsers() {
 
     if (error) {
       console.error('ft_users 로드 오류:', error);
+      if (selectEl && selectEl.options.length > 0) selectEl.options[0].textContent = '유저 로드 실패 — 재시작 필요';
       return;
     }
 
     ftUsersData = data || [];
     console.log(`✓ ft_users 로드 완료: ${ftUsersData.length}개`);
+    if (selectEl && selectEl.options.length > 0) selectEl.options[0].textContent = '-- 선택하세요 --';
 
     // 드롭박스 채우기
     populateFtUserSelect();
@@ -1990,7 +2008,9 @@ function renderOrderList() {
     // 검수 결과 HTML 생성
     let reviewHtml = '-';
     if (order.reviewStatus === 'ok') {
-      reviewHtml = '<span class="status-success">✅</span>';
+      reviewHtml = order.reviewResult?.cancelled
+        ? '<span class="status-success">✅</span><div style="color:#888; font-size:0.85em;">취소 — 장바구니 없음</div>'
+        : '<span class="status-success">✅</span>';
     } else if (order.reviewStatus === 'error') {
       const msg = order.reviewResult?.message || '오류';
       reviewHtml = `<span class="status-error">❌</span><div style="color: #d9534f; font-size: 0.85em;">${msg}</div>`;
@@ -2005,6 +2025,9 @@ function renderOrderList() {
         } else if (m.field === 'size') {
           // 리버스된 경우 'size' 필드는 실제로는 색상
           return isReversed ? `색상 : ${m.cart}` : `사이즈 : ${m.cart}`;
+        } else if (m.field === 'cancelled') {
+          // 취소 처리한 행인데 1688 장바구니에 그대로 남아 있음 (전체선택 결제 시 결제됨)
+          return `취소했으나 장바구니에 남음 (수량 ${m.cart})`;
         }
         return '';
       }).filter(t => t);
@@ -2919,6 +2942,7 @@ function applyCancelReason(order, reason, reasonType) {
   order.reason = reason;
   order.reasonType = reasonType;
   order.finalComplete = false;
+  markReviewStale();
 }
 
 // 규칙 1: 취소 사유 제거 — 사유 입력 전 완료 상태로 복원 (기타 내용은 보존)
@@ -2930,6 +2954,7 @@ function removeCancelReason(order) {
     delete order._preReason;
   }
   delete order._linkedFrom;
+  markReviewStale();
 }
 
 // 규칙 2: index 행이 실패가 된 직후 — 아직 실패가 아닌 같은 세트 행을 확인 후 함께 실패
@@ -3017,6 +3042,7 @@ function toggleComplete(index) {
     order.finalComplete = false;
     linkSetFailure(index);
   }
+  markReviewStale();
   renderOrderList();
 }
 
@@ -3329,6 +3355,7 @@ function markCheckedComplete() {
     o.reviewStatus = 'ok';
     o.finalComplete = true;
   });
+  markReviewStale();
   renderOrderList();
 }
 
@@ -3633,6 +3660,79 @@ function closeLinkEditModal() {
   linkEditTargetIndices = [];
 }
 
+// ════════════════════════════════════════════════════════════
+// 검수 결과 배너: 잘못 담긴 주문 (주문 목록 위에 표시)
+//  - 검수는 "주문 목록 → 장바구니" 뿐 아니라 "장바구니 → 주문 목록" 역방향도 검사한다.
+//  - 취소했는데 장바구니에 남은 것 / 수량 초과 / 목록에 없는 상품을 건수·초과 수량과 함께 보여준다.
+//  - 사용자가 1688 장바구니를 정리하고 다시 [검수]하면 재계산되어 사라진다.
+//  - 검수 후 취소/완료 상태가 바뀌면 "다시 검수 필요" 표시(검수 결과는 그 시점의 스냅샷)
+// ════════════════════════════════════════════════════════════
+let reviewExtrasOkTimer = null;
+
+function renderReviewExtras(extras) {
+  const box = document.getElementById('reviewExtrasBanner');
+  if (!box) return;
+  clearTimeout(reviewExtrasOkTimer);
+  delete box.dataset.stale;
+
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+  if (!extras || extras.length === 0) {
+    box.className = 'review-extras ok';
+    box.innerHTML = '✅ 잘못 담긴 주문이 없습니다 — 장바구니와 주문 목록이 일치합니다.';
+    box.style.display = '';
+    reviewExtrasOkTimer = setTimeout(() => { box.style.display = 'none'; }, 6000);
+    return;
+  }
+
+  const kindLabel = {
+    cancelled:   '취소했는데 장바구니에 남음',
+    excess:      '수량 초과',
+    not_in_list: '주문 목록에 없음'
+  };
+  const totalExcess = extras.reduce((s, e) => s + (Number(e.excess) || 0), 0);
+
+  const rows = extras.map(e => `
+    <tr>
+      <td class="rx-kind rx-${e.kind}">${kindLabel[e.kind] || e.kind}</td>
+      <td class="rx-name">${esc(e.productName) || `offer ${esc(e.offerId)}`}<div class="rx-sub">${esc(e.sellerName)}</div></td>
+      <td>${esc(e.color)}${e.size ? ' / ' + esc(e.size) : ''}</td>
+      <td class="rx-num">${e.cartQty}</td>
+      <td class="rx-num">${e.orderQty}</td>
+      <td class="rx-num rx-excess">+${e.excess}</td>
+      <td class="rx-sub">${(e.itemNos || []).map(esc).join('<br>')}</td>
+    </tr>`).join('');
+
+  box.className = 'review-extras warn';
+  box.innerHTML = `
+    <div class="rx-head">⚠️ 잘못 담긴 주문 <b>${extras.length}건</b> — 초과 수량 합계 <b>${totalExcess}개</b>
+      <span class="rx-hint">1688 장바구니에서 해당 상품을 삭제하거나 수량을 맞춘 뒤 [검수]를 다시 실행하세요. 이대로 진행하면 전체선택 결제 시 함께 결제됩니다.</span>
+    </div>
+    <table class="rx-table">
+      <thead><tr><th>구분</th><th>상품</th><th>옵션</th><th>장바구니</th><th>주문</th><th>초과</th><th>관련 item_no</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  box.style.display = '';
+}
+
+// 검수 후 취소/완료 상태가 바뀌면 배너에 "다시 검수 필요" 표시
+function markReviewStale() {
+  if (typeof stepStatus === 'undefined' || !stepStatus.review) return;
+  const box = document.getElementById('reviewExtrasBanner');
+  if (!box || box.dataset.stale === '1') return;
+  box.dataset.stale = '1';
+  clearTimeout(reviewExtrasOkTimer);
+  if (box.style.display === 'none' || !box.className.includes('warn')) {
+    box.className = 'review-extras stale';
+    box.innerHTML = '';
+  }
+  const note = document.createElement('div');
+  note.className = 'rx-stale';
+  note.textContent = '⟳ 취소/완료 상태가 바뀌었습니다 — [검수]를 다시 실행해 장바구니와 대조하세요.';
+  box.appendChild(note);
+  box.style.display = '';
+}
+
 // 검수 시작
 async function startReview() {
   try {
@@ -3668,10 +3768,13 @@ async function startReview() {
       order.reviewResult = null;
     });
 
-    await window.api.startReview(orders);
+    const reviewResult = await window.api.startReview(orders);
 
     // 검수 완료 후 화면 갱신 (완료 열은 자동 계산됨)
     renderOrderList();
+
+    // 잘못 담긴 주문(취소했는데 남음 / 수량 초과 / 목록에 없음) 배너 갱신
+    renderReviewExtras(reviewResult?.comparisonResults?.extraItems || []);
 
     // 버튼 상태 업데이트
     stepStatus.review = true;
