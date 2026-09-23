@@ -2165,10 +2165,11 @@ function renderOrderList() {
     if (order.isInvalid) return;
 
     // 취소 사유가 있는 행은 회색 배경 (기타 내용만 있는 경우 제외)
-    const hasCancelReason = order.reason && order.reasonType !== 'other';
+    //  (규칙 1에 따라 취소사유 행은 항상 실패 상태 — 회색은 "실패(취소)"를 뜻함)
+    const isCancelReasonRow = hasCancelReason(order);
 
     // 우선순위: 취소사유 회색 > 실패 주황색 > 기본
-    const trAttrs = hasCancelReason
+    const trAttrs = isCancelReasonRow
       ? ' class="row-gray" style="background-color: #d9d9d9;"'
       : isFailed
         ? ' class="row-orange" style="background-color: #ffcc99;"'
@@ -2523,7 +2524,11 @@ window.api.onProgress((progress) => {
     if (errorReason) {
       orders[index].errorReason = errorReason;
       if (errorReason === 'Invalid URL' || errorReason === 'Product offline') {
-        orders[index].reason = '링크 없음';
+        // 규칙 1: 자동 취소 사유도 실패로 고정 (자동화 중이므로 세트 연동 확인창은 띄우지 않음)
+        //  링크 수정(saveLinkEdit) 시 이 자동 사유는 해제된다.
+        if (!hasCancelReason(orders[index])) {
+          applyCancelReason(orders[index], '링크 없음', AUTO_REASON_TYPE);
+        }
       }
     }
   }
@@ -2851,13 +2856,168 @@ function closeOrderNumberPopover() {
   if (existing) existing.remove();
 }
 
-// 완료 상태 토글 함수
-function toggleComplete(index) {
-  if (index < orders.length) {
-    // 토글: 완료 <-> 실패
-    orders[index].finalComplete = !orders[index].finalComplete;
-    renderOrderList();
+// ════════════════════════════════════════════════════════════
+// 취소 사유 ↔ 완료(성공/실패) 정합성 + 세트 연동
+//  규칙 1) 취소 사유(프리셋/직접입력/자동/세트연동)가 있는 행은 항상 실패(finalComplete=false).
+//          사유를 지우면 사유 입력 "전"의 완료 상태로 되돌린다.
+//          → "회색(취소처럼 보임)인데 실제로는 성공으로 저장"되는 상태를 없앤다.
+//  규칙 2) 세트(set_total>1) 중 한 행이 실패가 되면, 아직 실패가 아닌 같은 세트 행을
+//          확인 후 함께 실패 처리한다(사유: '세트 연동 취소 (원인 item_no)').
+//          원인 행이 다시 성공이 되면 연동 취소된 행도 확인 후 되돌리고,
+//          세트 중 일부만 성공으로 되돌리려 하면 세트 분할 주문을 경고한다.
+// ════════════════════════════════════════════════════════════
+const LINKED_REASON_TYPE = 'linked';   // 세트 연동으로 자동 부여된 취소 사유
+const AUTO_REASON_TYPE   = 'auto';     // 자동화가 부여한 취소 사유 (예: 링크 없음)
+
+function hasCancelReason(order) {
+  return !!(order && order.reason && order.reasonType !== 'other');
+}
+
+// 렌더링·저장 필터와 동일한 실패 판정
+function isOrderFailed(order) {
+  if (order.finalComplete !== undefined) return order.finalComplete === false;
+  const hasResult = order.status && order.status !== 'pending';
+  const hasReview = order.reviewStatus && order.reviewStatus !== '';
+  const resultTrue = order.status === 'success';
+  const reviewTrue = order.reviewStatus === 'ok';
+  if (hasResult && hasReview) return !(resultTrue && reviewTrue);
+  if (hasResult && !hasReview) return !resultTrue;
+  if (!hasResult && hasReview) return !reviewTrue;
+  return false;
+}
+
+function itemNoOf(order) {
+  return (order && order.dbData && order.dbData.order_number) || (order && order.orderNo) || '';
+}
+
+// 세트 식별 키: 주문코드 + item_no 앞 3구간(user-날짜-item_seq) + set_total
+//  예) BO-260922-0085-S21 / BO-260922-0085-S22 → 같은 세트
+function getSetKey(order) {
+  if (!order || order.isInvalid) return null;
+  const db = order.dbData || {};
+  const total = parseInt(db.set_total, 10) || 0;
+  if (total <= 1) return null;
+  const parts = String(itemNoOf(order)).split('-');
+  if (parts.length < 4) return null;
+  const orderCode = order.orderCode || db.order_code || '';
+  return `${orderCode}|${parts.slice(0, 3).join('-')}|${total}`;
+}
+
+function findSetSiblingIndexes(index) {
+  const key = getSetKey(orders[index]);
+  if (!key) return [];
+  const result = [];
+  orders.forEach((o, i) => { if (i !== index && getSetKey(o) === key) result.push(i); });
+  return result;
+}
+
+// 규칙 1: 취소 사유 적용 — 사유가 처음 붙을 때의 완료 상태를 기억해 둔다
+function applyCancelReason(order, reason, reasonType) {
+  if (!hasCancelReason(order) && !order._preReason) {
+    order._preReason = { finalComplete: order.finalComplete };
   }
+  order.reason = reason;
+  order.reasonType = reasonType;
+  order.finalComplete = false;
+}
+
+// 규칙 1: 취소 사유 제거 — 사유 입력 전 완료 상태로 복원 (기타 내용은 보존)
+function removeCancelReason(order) {
+  order.reason = '';
+  order.reasonType = order.otherNote ? 'other' : '';
+  if (order._preReason) {
+    order.finalComplete = order._preReason.finalComplete;
+    delete order._preReason;
+  }
+  delete order._linkedFrom;
+}
+
+// 규칙 2: index 행이 실패가 된 직후 — 아직 실패가 아닌 같은 세트 행을 확인 후 함께 실패
+function linkSetFailure(index) {
+  const targets = findSetSiblingIndexes(index).filter(i => !isOrderFailed(orders[i]));
+  if (targets.length === 0) return;
+  const list = targets.map(i => `  · ${itemNoOf(orders[i])}`).join('\n');
+  const ok = confirm(
+    `세트 상품입니다.\n같은 세트 ${targets.length}건도 함께 실패 처리할까요?\n\n${list}\n\n` +
+    `[취소]를 누르면 이 행만 실패 처리되어, 세트의 나머지는 그대로 주문됩니다.`
+  );
+  if (!ok) return;
+  const srcNo = itemNoOf(orders[index]);
+  targets.forEach(i => {
+    applyCancelReason(orders[i], `세트 연동 취소 (${srcNo})`, LINKED_REASON_TYPE);
+    orders[i]._linkedFrom = srcNo;
+  });
+}
+
+// 규칙 2: index 행이 다시 성공이 된 직후 — 이 행 때문에 연동 취소된 세트 행을 확인 후 복원
+function unlinkSetFailure(index) {
+  const srcNo = itemNoOf(orders[index]);
+  const targets = findSetSiblingIndexes(index).filter(i => orders[i]._linkedFrom === srcNo);
+  if (targets.length === 0) return;
+  const list = targets.map(i => `  · ${itemNoOf(orders[i])}`).join('\n');
+  if (!confirm(`이 행 때문에 함께 실패 처리됐던 같은 세트 ${targets.length}건도 되돌릴까요?\n\n${list}`)) return;
+  targets.forEach(i => removeCancelReason(orders[i]));
+}
+
+// 규칙 2: 세트 중 이 행만 성공으로 되돌리려는 경우 경고 (세트 분할 주문 방지)
+//  - 이 행에서 연동된 행은 unlinkSetFailure 가 따로 물어보므로 제외
+function confirmSetSplit(index) {
+  const srcNo = itemNoOf(orders[index]);
+  const failed = findSetSiblingIndexes(index)
+    .filter(i => isOrderFailed(orders[i]) && orders[i]._linkedFrom !== srcNo);
+  if (failed.length === 0) return true;
+  const list = failed.map(i => `  · ${itemNoOf(orders[i])}`).join('\n');
+  return confirm(
+    `같은 세트 ${failed.length}건은 실패 상태입니다.\n\n${list}\n\n` +
+    `이 행만 성공으로 되돌리면 세트가 나뉘어 주문됩니다. 계속할까요?`
+  );
+}
+
+// 규칙 1·2: 취소 사유를 없애는 공통 처리 (지우기 / 기타 내용 전환)
+//  반환: true = 처리됨, false = 사용자가 세트 분할 경고에서 취소
+function releaseCancelReason(index) {
+  const order = orders[index];
+  if (!hasCancelReason(order)) return true;
+  const restored = order._preReason ? order._preReason.finalComplete : order.finalComplete;
+  const willFail = isOrderFailed({ ...order, finalComplete: restored });
+  if (!willFail && !confirmSetSplit(index)) return false;
+  removeCancelReason(order);
+  if (!isOrderFailed(order)) unlinkSetFailure(index);
+  return true;
+}
+
+// 완료 상태 토글 함수 (완료 ↔ 실패) — 규칙 1·2 적용
+function toggleComplete(index) {
+  if (index >= orders.length) return;
+  const order = orders[index];
+  const next = !order.finalComplete;          // 기존 토글 동작 유지
+  const wasFailed = isOrderFailed(order);
+
+  if (next === true) {
+    if (wasFailed) {
+      // 실패 → 성공: 취소 사유가 있으면 사유를 지워야만 성공 가능 (규칙 1)
+      if (hasCancelReason(order) &&
+          !confirm(`취소 사유("${order.reason}")가 입력된 행입니다.\n사유를 지우고 성공으로 바꿀까요?`)) {
+        return;
+      }
+      if (!confirmSetSplit(index)) return;
+      if (hasCancelReason(order)) {
+        order.reason = '';
+        order.reasonType = order.otherNote ? 'other' : '';
+        delete order._preReason;
+        delete order._linkedFrom;
+      }
+      order.finalComplete = true;
+      unlinkSetFailure(index);
+    } else {
+      order.finalComplete = true;
+    }
+  } else {
+    // 성공 → 실패
+    order.finalComplete = false;
+    linkSetFailure(index);
+  }
+  renderOrderList();
 }
 
 // ── 범위 체크박스 선택/해제 (우측 사이드바 최상단) ──
@@ -3136,10 +3296,36 @@ function markCheckedComplete() {
     alert('체크된 항목이 없습니다. 먼저 체크박스를 선택하세요.');
     return;
   }
-  if (!confirm(`체크된 ${targets.length}건을 검수 OK + 완료 상태로 전환하시겠습니까?`)) {
+  // 규칙 1: 취소 사유가 있는 행은 완료(성공) 처리 대상에서 제외
+  const reasonRows = targets.filter(o => hasCancelReason(o));
+  const applyTargets = targets.filter(o => !hasCancelReason(o));
+  if (applyTargets.length === 0) {
+    alert(`체크된 ${targets.length}건 모두 취소 사유가 입력되어 있어 완료 처리할 수 없습니다.\n` +
+          `완료로 바꾸려면 먼저 사유를 지워주세요.`);
     return;
   }
-  targets.forEach(o => {
+
+  // 규칙 2: 완료 처리 후에도 같은 세트에 실패 행이 남는지 검사 (세트 분할 주문 경고)
+  const applySet = new Set(applyTargets);
+  const splitItemNos = new Set();
+  applyTargets.forEach(o => {
+    findSetSiblingIndexes(orders.indexOf(o)).forEach(i => {
+      const sib = orders[i];
+      if (!applySet.has(sib) && isOrderFailed(sib)) splitItemNos.add(itemNoOf(sib));
+    });
+  });
+
+  let msg = `체크된 ${applyTargets.length}건을 검수 OK + 완료 상태로 전환하시겠습니까?`;
+  if (reasonRows.length > 0) {
+    msg += `\n\n※ 취소 사유가 있는 ${reasonRows.length}건은 제외됩니다.`;
+  }
+  if (splitItemNos.size > 0) {
+    msg += `\n\n⚠️ 아래 같은 세트 행은 실패 상태로 남아, 세트가 나뉘어 주문됩니다:\n` +
+           [...splitItemNos].map(n => `  · ${n}`).join('\n');
+  }
+  if (!confirm(msg)) return;
+
+  applyTargets.forEach(o => {
     o.reviewStatus = 'ok';
     o.finalComplete = true;
   });
@@ -3191,37 +3377,51 @@ function closeReasonModal() {
   currentReasonIndex = -1;
 }
 
-// 취소 사유 선택 처리 (프리셋 또는 직접 입력)
+// 취소 사유 선택 처리 (프리셋 또는 직접 입력) — 규칙 1: 사유 = 실패
 function selectReason(reason, isCustom = false) {
-  if (currentReasonIndex >= 0 && currentReasonIndex < orders.length) {
-    orders[currentReasonIndex].reason = reason;
-    orders[currentReasonIndex].reasonType = isCustom ? 'custom' : 'preset';
-    orders[currentReasonIndex].otherNote = '';  // 취소사유 선택 시 기타 내용 클리어
-    renderOrderList();
-  }
-  closeReasonModal();
+  const idx = currentReasonIndex;
+  closeReasonModal();   // 세트 연동 확인창이 모달 위에 겹치지 않도록 먼저 닫음
+  if (idx < 0 || idx >= orders.length) return;
+
+  const order = orders[idx];
+  const hadReason = hasCancelReason(order);
+  // 같은 사유 재적용(모달을 열었다 바깥 클릭으로 닫는 경우 등) → 변경 없음
+  //  (연동 행의 연결 정보·기타 내용이 의도치 않게 바뀌는 것 방지)
+  if (hadReason && order.reason === reason) return;
+  order.otherNote = '';  // 취소사유 선택 시 기타 내용 클리어
+  applyCancelReason(order, reason, isCustom ? 'custom' : 'preset');
+  delete order._linkedFrom;   // 사용자가 직접 사유를 지정 → 연동 행이 아닌 독립 취소로 전환
+  // 새로 취소 사유가 붙은 경우에만 세트 연동 확인 (문구만 수정하는 경우는 묻지 않음)
+  if (!hadReason) linkSetFailure(idx);
+  renderOrderList();
 }
 
-// 기타 내용 입력 처리 (배경색 영향 없음)
+// 기타 내용 입력 처리 (배경색 영향 없음) — 취소 사유가 있었다면 해제(규칙 1 복원)
 function selectOtherNote(note) {
-  if (currentReasonIndex >= 0 && currentReasonIndex < orders.length) {
-    orders[currentReasonIndex].otherNote = note;
-    orders[currentReasonIndex].reason = '';      // 기타 내용 입력 시 취소사유 클리어
-    orders[currentReasonIndex].reasonType = 'other';
-    renderOrderList();
-  }
+  const idx = currentReasonIndex;
   closeReasonModal();
+  if (idx < 0 || idx >= orders.length) return;
+
+  if (!releaseCancelReason(idx)) return;   // 세트 분할 경고에서 취소 → 변경 없음
+  const order = orders[idx];
+  order.otherNote = note;
+  order.reason = '';
+  order.reasonType = 'other';
+  renderOrderList();
 }
 
-// 사유 지우기 (전체 클리어)
+// 사유 지우기 (전체 클리어) — 취소 사유였다면 사유 입력 전 상태로 복원
 function clearReason() {
-  if (currentReasonIndex >= 0 && currentReasonIndex < orders.length) {
-    orders[currentReasonIndex].reason = '';
-    orders[currentReasonIndex].reasonType = '';
-    orders[currentReasonIndex].otherNote = '';
-    renderOrderList();
-  }
+  const idx = currentReasonIndex;
   closeReasonModal();
+  if (idx < 0 || idx >= orders.length) return;
+
+  if (!releaseCancelReason(idx)) return;   // 세트 분할 경고에서 취소 → 변경 없음
+  const order = orders[idx];
+  order.reason = '';
+  order.reasonType = '';
+  order.otherNote = '';
+  renderOrderList();
 }
 
 // ── 사유 모달 이벤트 초기화 ──
@@ -3418,6 +3618,8 @@ function saveLinkEdit() {
     order.dbData.site_url         = rawUrl;                  // 원본 입력값 (Supabase 저장용)
     order.dbData['1688_offer_id'] = offerId;                 // 재추출된 offer_id
     if (order.originalData) order.originalData[11] = rawUrl; // 데이터 미리보기 L열
+    // 링크를 고쳤으므로 자동 부여된 '링크 없음' 사유는 해제 (수동 입력 사유는 유지)
+    if (order.reasonType === AUTO_REASON_TYPE) removeCancelReason(order);
   });
 
   closeLinkEditModal();
