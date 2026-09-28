@@ -1488,8 +1488,7 @@
 
       <!-- 그룹 7: 차감 -->
       <div class="rp-group">
-        <!-- 차감: 모든 그룹 V2(신 원장) 만 노출 (USER_CODE_BUTTON_VISIBILITY). V1 은 롤백용으로 코드만 유지 -->
-        <button class="btn-step btn-step-deduct" id="btnDeduct" onclick="deductStock()">차감</button>
+        <!-- 차감: 신 원장(ft_user_transactions) 단일 기준. 구 원장(V1) 차감은 제거됨 — DB 에서도 구 원장 쓰기 차단 -->
         <button class="btn-step btn-step-deduct" id="btnDeductV2" onclick="deductStockV2()">차감 (신 원장)</button>
       </div>
       <div class="rp-divider">⬇</div>

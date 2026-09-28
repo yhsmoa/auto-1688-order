@@ -78,7 +78,7 @@ function applyOrderUnlockState() {
 //   · HI/MB/BZ/BR/BO 전부 btnDeductV2 → RPC deduct_balance_and_record_transaction_v2
 //       → 신 원장 ft_user_transactions 에 기록 (잔액 정본), ft_balances 는 캐시로 갱신,
 //         ft_orders 가격 4필드 UPDATE 까지 한 트랜잭션. 구 원장(invoiceManager_transactions) 기록 안 함.
-//   · btnDeduct (V1, 구 원장 기록) 은 어느 그룹에도 노출하지 않는다 — 코드는 롤백용으로만 유지.
+//   · V1 차감(btnDeduct, 구 원장 기록)은 제거됨 — 구 원장은 DB 에서 읽기 전용 (2026-09-28).
 //   · 신 원장이 유일한 기준. 문제 발생 시 대체 경로 없이 alert 후 중단.
 // ════════════════════════════════════════════════════════════
 // 중단 버튼(btnStop, btnStopV2)은 작업 진행 상태에 따라 자체 제어되므로
@@ -99,7 +99,7 @@ const ALL_RP_ORDER_BUTTONS = [
   'btnSkip', 'btnStart', 'btnReview',
   'btnRefCode', 'btnRefCodeV2',
   'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2',
-  'btnDeduct', 'btnDeductV2',
+  'btnDeductV2',
   'btnExportSuccess', 'btnExportFail', 'btnExportFailV2'
 ];
 
@@ -234,7 +234,6 @@ function updateButtonSteps() {
   const btnOrderNumber  = document.getElementById('btnOrderNumber');
   const btnSaveSupabase = document.getElementById('btnSaveSupabase');
   const btnSaveV2       = document.getElementById('btnSaveV2');
-  const btnDeduct       = document.getElementById('btnDeduct');
   const btnDeductV2     = document.getElementById('btnDeductV2');
   const btnExportSuccess  = document.getElementById('btnExportSuccess');
   const btnExportFail     = document.getElementById('btnExportFail');
@@ -246,7 +245,7 @@ function updateButtonSteps() {
     btnRefCode, btnRefCodeV2,
     btnOrderNumber,
     btnSaveSupabase, btnSaveV2,
-    btnDeduct, btnDeductV2,
+    btnDeductV2,
     btnExportSuccess, btnExportFail, btnExportFailV2
   ];
   allBtns.forEach(btn => btn?.classList.remove('completed', 'next', 'active'));
@@ -303,14 +302,12 @@ function updateButtonSteps() {
     btnSaveSupabase?.classList.add('completed');
     btnSaveV2?.classList.add('completed');
     if (!stepStatus.deduct) {
-      btnDeduct?.classList.add('next');
       btnDeductV2?.classList.add('next');
     }
   }
 
   // 차감(deduct) 단계 — V1/V2 동시 처리
   if (stepStatus.deduct) {
-    btnDeduct?.classList.add('completed');
     btnDeductV2?.classList.add('completed');
     if (!stepStatus.success && !stepStatus.fail) {
       btnExportSuccess?.classList.add('next');
@@ -329,95 +326,12 @@ function updateButtonSteps() {
   }
 }
 
-// 차감 기능 - 엑셀 파일 업로드
-function deductStock() {
-  if (orders.length === 0) {
-    alert('먼저 주문 데이터를 정리해주세요.');
-    return;
-  }
-
-  // 파일 입력 요소 생성
-  const fileInput = document.createElement('input');
-  fileInput.type = 'file';
-  fileInput.accept = '.xlsx,.xls';
-  fileInput.style.display = 'none';
-
-  fileInput.addEventListener('change', async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    try {
-      await processDeductExcel(file);
-    } catch (error) {
-      console.error('차감 엑셀 처리 오류:', error);
-      alert('엑셀 파일 처리 중 오류가 발생했습니다: ' + error.message);
-    }
-  });
-
-  document.body.appendChild(fileInput);
-  fileInput.click();
-  document.body.removeChild(fileInput);
-}
-
-// 차감 엑셀 파일 처리
-async function processDeductExcel(file) {
-  const btnDeduct = document.getElementById('btnDeduct');
-  const originalText = btnDeduct ? btnDeduct.textContent : '차감';
-
-  if (btnDeduct) {
-    btnDeduct.disabled = true;
-    btnDeduct.textContent = '처리 중...';
-  }
-
-  try {
-    const data = await file.arrayBuffer();
-    const workbook = XLSX.read(data, { type: 'array' });
-    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-
-    // ── 공용 파서 (deductParser.js) — 파싱·검증·계산은 V2 와 동일 로직 ──
-    //    검증: 주문코드 1개·현재 주문목록 포함·user_code 일치·음수/0 차단
-    const selectedUserCode =
-      document.getElementById('ftUserSelect')?.selectedOptions[0]?.dataset.userCode || '';
-    let calc;
-    try {
-      calc = DeductParser.parseDeductWorksheet(worksheet, XLSX, {
-        currentOrderCodes: collectCurrentOrderCodes(),
-        selectedUserCode,
-      });
-    } catch (e) {
-      if (e instanceof DeductParser.DeductParseError) { alert(e.message); return; }
-      throw e;
-    }
-    console.log('=== 차감 계산 결과 (V1) ===', calc);
-
-    // Supabase 저장 (구 원장)
-    await saveDeductTransaction({
-      order_code: calc.orderCode,
-      delivery_fee: calc.delivery_fee,
-      price: calc.price,
-      service_fee: calc.service_fee,
-      amount: calc.amount,
-      item_qty: calc.item_qty
-    });
-
-  } finally {
-    if (btnDeduct) {
-      btnDeduct.disabled = false;
-      btnDeduct.textContent = originalText;
-    }
-  }
-}
-
 // ════════════════════════════════════════════════════════════
-// 차감 공용 헬퍼 (V1/V2)
+// 차감 헬퍼 (V2 — 신 원장)
+//   구 원장(invoiceManager_transactions)에 기록하던 V1 차감(deductStock·processDeductExcel·
+//   saveDeductTransaction)은 제거됨 — 2026-09-28, 구 원장은 DB 에서 읽기 전용으로 잠김
+//   (1688-invoice/supabase/ledger/003_freeze_old_ledger.sql)
 // ════════════════════════════════════════════════════════════
-// KST 기준 오늘 (YYYY-MM-DD)
-//   toISOString() 은 UTC 날짜라 KST 00~09시 차감이 전날로 기록되던 버그(예: 06-17 차감이 06-16) 수정
-function todayKST() {
-  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  return kst.toISOString().slice(0, 10);
-}
-
 // 현재 주문 목록의 주문코드 집합 — 엑셀 AD열 대조용
 function collectCurrentOrderCodes() {
   const codes = new Set();
@@ -426,172 +340,6 @@ function collectCurrentOrderCodes() {
     else if (order.dbData && order.dbData.order_code) codes.add(order.dbData.order_code);
   });
   return codes;
-}
-
-// 차감 트랜잭션 Supabase 저장 (V1 — 구 원장 invoiceManager_transactions)
-async function saveDeductTransaction(calcData) {
-  if (!supabaseClient) {
-    alert('Supabase 연결이 초기화되지 않았습니다.');
-    return;
-  }
-
-  // 선택된 유저 정보 가져오기 (ft_users)
-  //  ※ user_id 는 UUID(ft_users.id) 로 저장한다.
-  //    이 테이블은 이름형(immong 등) → UUID 로 이관 완료된 상태이며,
-  //    이름을 다시 넣으면 다른 프로젝트의 월별 조회가
-  //    "invalid input syntax for type uuid" 로 통째로 실패한다.
-  //    이름 정보는 user_name(username) 에 남으므로 손실 없음.
-  const ftUserSelect = document.getElementById('ftUserSelect');
-  const selectedOption = ftUserSelect ? ftUserSelect.selectedOptions[0] : null;
-  const selectedUserId = ftUserSelect ? ftUserSelect.value : '';      // ft_users.id (UUID)
-  const selectedMasterAccount = selectedOption ? (selectedOption.dataset.masterAccount || '') : '';
-  //  - user_name → username   (BZ=immong / BR=immongbr 처럼 계정별로 구분됨)
-  //  - user_code → user_code
-  //  - master_id → master_id
-  const selectedUserName = selectedOption ? (selectedOption.dataset.username || '') : '';
-  const selectedUserCode = selectedOption ? (selectedOption.dataset.userCode || '') : '';
-  const selectedMasterId = selectedOption ? (selectedOption.dataset.masterId || '') : '';
-
-  if (!ftUserSelect || !ftUserSelect.value) {
-    alert('유저를 선택해주세요.');
-    return;
-  }
-
-  // UUID 형식 방어 — 이름형 값이 섞여 들어가는 것을 차단
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(selectedUserId)) {
-    alert(`유저 ID 형식이 올바르지 않습니다 (UUID 아님): ${selectedUserId}\n차감을 중단합니다.`);
-    return;
-  }
-
-  // 오늘 날짜 (YYYY-MM-DD, KST) — UTC 날짜 버그 수정 (todayKST 헬퍼)
-  const dateStr = todayKST();
-
-  // 저장할 데이터
-  const transactionData = {
-    order_code: calcData.order_code,
-    user_id: selectedUserId,
-    transaction_type: '차감',
-    description: calcData.order_code + ' 주문',
-    '1688_order_id': null,
-    amount: calcData.amount,
-    delivery_fee: calcData.delivery_fee,
-    service_fee: calcData.service_fee,
-    extra_fee: null,
-    balance_after: null,
-    status: '성공',
-    admin_note: null,
-    updated_at: null,
-    price: calcData.price,
-    master_account: selectedMasterAccount,
-    date: dateStr,
-    item_qty: calcData.item_qty,
-    // ── 계정 구분용 신설 칼럼 ──
-    user_name: selectedUserName || null,
-    user_code: selectedUserCode || null,
-    master_id: selectedMasterId || null
-  };
-
-  console.log('=== 차감 트랜잭션 저장 ===');
-  console.log('저장할 데이터:', transactionData);
-
-  try {
-    // ── order_code 기준 중복 검사 ──
-    const { data: existingTx, error: checkError } = await supabaseClient
-      .from('invoiceManager_transactions')
-      .select('id')
-      .eq('order_code', calcData.order_code)
-      .limit(1);
-
-    if (checkError) {
-      console.error('중복 검사 오류:', checkError);
-      alert(`중복 검사 실패: ${checkError.message}`);
-      return;
-    }
-
-    let data;
-    if (existingTx && existingTx.length > 0) {
-      // ── 기존 레코드 UPDATE (order_code 기준) ──
-      console.log(`order_code(${calcData.order_code}) 기존 레코드 발견 → UPDATE`);
-      const { data: updateData, error: updateError } = await supabaseClient
-        .from('invoiceManager_transactions')
-        .update(transactionData)
-        .eq('id', existingTx[0].id)
-        .select();
-
-      if (updateError) {
-        console.error('차감 업데이트 오류:', updateError);
-        alert(`차감 업데이트 실패: ${updateError.message}`);
-        return;
-      }
-      data = updateData;
-      console.log('✓ 차감 업데이트 완료:', data);
-    } else {
-      // ── 신규 INSERT ──
-      const { data: insertData, error: insertError } = await supabaseClient
-        .from('invoiceManager_transactions')
-        .insert([transactionData])
-        .select();
-
-      if (insertError) {
-        console.error('차감 저장 오류:', insertError);
-        alert(`차감 저장 실패: ${insertError.message}`);
-        return;
-      }
-      data = insertData;
-      console.log('✓ 차감 저장 완료:', data);
-    }
-
-    // 저장 검증 - 실제로 데이터가 저장됐는지 확인
-    if (!data || data.length === 0) {
-      alert('차감 저장 실패: 데이터가 반환되지 않았습니다.');
-      return;
-    }
-
-    const savedId = data[0].id;
-    console.log('저장된 ID:', savedId);
-
-    // ID로 다시 조회하여 검증
-    const { data: verifyData, error: verifyError } = await supabaseClient
-      .from('invoiceManager_transactions')
-      .select('*')
-      .eq('id', savedId)
-      .single();
-
-    if (verifyError) {
-      console.error('차감 검증 오류:', verifyError);
-      alert(`차감 저장 검증 실패: ${verifyError.message}\n\n데이터가 저장되지 않았을 수 있습니다.`);
-      return;
-    }
-
-    if (!verifyData) {
-      alert('차감 저장 검증 실패: 저장된 데이터를 찾을 수 없습니다.');
-      return;
-    }
-
-    // 저장된 데이터 값 검증
-    const isValid =
-      verifyData.order_code === calcData.order_code &&
-      parseFloat(verifyData.amount) === calcData.amount &&
-      parseFloat(verifyData.delivery_fee) === calcData.delivery_fee &&
-      parseFloat(verifyData.price) === calcData.price;
-
-    if (!isValid) {
-      console.error('데이터 불일치:', { saved: verifyData, expected: calcData });
-      alert('차감 저장 검증 실패: 저장된 데이터가 일치하지 않습니다.');
-      return;
-    }
-
-    console.log('✓ 차감 저장 검증 완료:', verifyData);
-    alert(`차감 저장 및 검증 완료!\n\n주문코드: ${calcData.order_code}\n배송비: ${calcData.delivery_fee.toLocaleString()}원\n상품가: ${calcData.price.toLocaleString()}원\n수수료: ${calcData.service_fee.toLocaleString()}원\n총액: ${calcData.amount.toLocaleString()}원\n\n✓ Supabase 저장 확인됨 (ID: ${savedId})`);
-
-    // 버튼 상태 업데이트
-    stepStatus.deduct = true;
-    updateButtonSteps();
-
-  } catch (error) {
-    console.error('차감 저장 예외:', error);
-    alert('차감 저장 중 오류가 발생했습니다: ' + error.message);
-  }
 }
 
 // Supabase 클라이언트 (나중에 초기화)
