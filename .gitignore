@@ -6,6 +6,8 @@ dist/
 
 # Environment variables (민감한 정보)
 .env
+# 빌드 시 scripts/build-env.js 가 만드는 설치 파일용 .env (필요한 키만 포함)
+.build-env/
 
 # Playwright browsers
 .local-browsers/
