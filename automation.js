@@ -116,11 +116,30 @@ async function applyStealthScripts(page) {
   });
 }
 
+// 다운로드 동작 복구
+// Playwright 는 CDP 로 연결하는 순간 Chrome 에 "다운로드는 임시 폴더에 무작위 이름으로 저장" 설정을
+// 걸어 버린다 (Browser.setDownloadBehavior allowAndName). 그 상태에선 사용자가 그 Chrome 에서
+// 엑셀 등을 내려받아도 파일이 보이지 않으므로, 연결 직후 Chrome 기본 동작(사용자 다운로드 폴더)으로 되돌린다.
+// ※ 브라우저 수준 CDP 세션으로 보내야 적용된다 (페이지 세션으로는 무시됨 - 실측).
+async function restoreDownloadBehavior(browser) {
+  try {
+    const session = await browser.newBrowserCDPSession();
+    try {
+      await session.send('Browser.setDownloadBehavior', { behavior: 'default' });
+    } finally {
+      await session.detach().catch(() => {});
+    }
+  } catch (e) {
+    console.log('  [download] 다운로드 설정 복구 실패 (무시):', e.message);
+  }
+}
+
 // 디버그 포트 연결 확인
 async function tryConnectChrome(retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
       const browser = await chromium.connectOverCDP('http://localhost:9222');
+      await restoreDownloadBehavior(browser);
       return browser;
     } catch (e) {
       if (i < retries - 1) {
