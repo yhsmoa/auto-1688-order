@@ -4331,6 +4331,14 @@ async function inputRefCodesV2() {
     } else if (result.stoppedByEmptyTextarea) {
       showEmptyTextareaWarning(result.emptyTextareaCount, result.totalTextareas, result.emptySellerNames);
       alert(`빈 입력폼 발견으로 제출하지 않고 중단되었습니다.\n빈 항목을 확인해주세요.`);
+    } else if (result.stoppedByDeliveryMethod) {
+      const info = result.deliveryMethodInfo || {};
+      alert(
+        `配送方式(배송 방식)에서 "商家配送" 선택을 확인할 수 없어 제출하지 않고 중단했습니다.\n\n` +
+        `선택지 ${info.found ?? '?'}개 중 미선택 ${info.unselected ?? '?'}개\n` +
+        `처리 완료: ${result.successOrderIndexes.length}건 (${result.iterationCount}회 반복)\n\n` +
+        `1688 주문확인 페이지에서 배송 방식을 商家配送 으로 직접 선택한 뒤 제출하거나, 다시 [V2 참조코드]를 실행하세요.`
+      );
     } else {
       const reasonText = result.exitReason ? `\n종료 사유: ${result.exitReason}` : '';
       alert(`V2 참조코드 입력 완료!\n처리: ${result.successOrderIndexes.length}건 (${result.iterationCount}회 반복)${reasonText}`);

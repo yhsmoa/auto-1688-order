@@ -2756,6 +2756,8 @@ async function inputRefCodesV2(groupedData, userCode) {
   const emptySellerNames = [];
   let iterationCount = 0;
   let stoppedByEmptyTextarea = false;
+  let stoppedByDeliveryMethod = false;   // 配送方式 → 商家配送 선택 실패로 제출 전 중단
+  let deliveryMethodInfo = null;
   let exitReason = '';  // 루프 종료 사유 추적
 
   try {
@@ -3125,6 +3127,21 @@ async function inputRefCodesV2(groupedData, userCode) {
       checkShouldStop();
       await selectAddress(page, userCode);
 
+      // ── Section 6.2: 配送方式 → 商家配送 일괄 선택 (2026-10-26) ──
+      //   주소 확정 뒤에 해야 한다 (주소가 바뀌면 배송 방식이 다시 그려질 수 있음).
+      //   선택지를 찾았는데 선택이 안 되면 제출하지 않고 중단. 영역이 없으면 그대로 진행.
+      //   선택지 자체를 못 찾으면(구조 미확인) 경고만 남기고 진행 — 현재 동작과 동일.
+      console.log('\nSection 6.2: Delivery method → 商家配送...');
+      checkShouldStop();
+      await page.waitForTimeout(500);
+      deliveryMethodInfo = await selectMerchantDelivery(page);
+      if (deliveryMethodInfo.present && deliveryMethodInfo.found > 0 && !deliveryMethodInfo.ok) {
+        stoppedByDeliveryMethod = true;
+        exitReason = `配送方式 商家配送 선택 실패 (${deliveryMethodInfo.unselected}/${deliveryMethodInfo.found} 미선택)`;
+        console.log(`\n!!! ${exitReason} — stopping before submit.`);
+        break;
+      }
+
       // ── Section 6.5: 주문 제출 버튼 클릭 ──
       // 주소 확정(确定) 후 로딩 완료 대기 → enabled + visible 된 후 클릭
       console.log('\nSection 6.5: Waiting for submit button to be ready...');
@@ -3140,6 +3157,18 @@ async function inputRefCodesV2(groupedData, userCode) {
         exitReason = '제출 버튼 활성화 대기 실패 (30초)';
         console.log(`  X ${exitReason}: ${e.message}`);
         break;
+      }
+
+      // 제출 직전 재확인: 가격 재계산 등으로 配送方式 이 되돌아갔으면 다시 선택 (선택지가 있던 경우만)
+      if (deliveryMethodInfo.present && deliveryMethodInfo.found > 0) {
+        const recheck = await selectMerchantDelivery(page);
+        if (recheck.found > 0 && !recheck.ok) {
+          stoppedByDeliveryMethod = true;
+          deliveryMethodInfo = recheck;
+          exitReason = `配送方式 商家配送 재확인 실패 (${recheck.unselected}/${recheck.found} 미선택)`;
+          console.log(`\n!!! ${exitReason} — stopping before submit.`);
+          break;
+        }
       }
 
       const submitOrderBtn = page.locator(submitBtnSelector).last();
@@ -3203,6 +3232,7 @@ async function inputRefCodesV2(groupedData, userCode) {
       emptyTextareaCount, totalTextareas, emptySellerNames,
       failedOrderIndexes, iterationCount,
       stoppedByUser: false, stoppedByEmptyTextarea,
+      stoppedByDeliveryMethod, deliveryMethodInfo,
       exitReason
     };
 
@@ -3214,6 +3244,7 @@ async function inputRefCodesV2(groupedData, userCode) {
         emptyTextareaCount, totalTextareas, emptySellerNames,
         failedOrderIndexes, iterationCount,
         stoppedByUser: true, stoppedByEmptyTextarea: false,
+        stoppedByDeliveryMethod: false, deliveryMethodInfo,
         exitReason: '사용자 중지'
       };
     }
@@ -3461,6 +3492,102 @@ async function selectShopCheckboxesBatch(page, shopCount) {
   } else {
     console.log(`  [Batch] All ${targetCount} shops checked successfully`);
   }
+}
+
+// ========================================
+// 配送方式 → 商家配送 일괄 선택 (주문확인 페이지) — 2026-10-26
+// - 주문확인 페이지에 <official-delivery-method-pc> (配送方式) 영역이 있으면 모든 블록에서 "商家配送" 을 선택한다.
+// - 선택지는 커스텀 엘리먼트 내부(shadow DOM)에 그려지므로 shadowRoot 까지 재귀 탐색한다.
+// - 1회 evaluate 로 미선택 항목을 전부 클릭 → 1회 evaluate 로 선택 상태 재확인 → 남은 것만 Playwright 클릭 폴백.
+// - 판정: 선택지(또는 가까운 조상)의 class 에 selected/active/checked/current, aria-checked/selected="true",
+//         내부 radio checked 중 하나면 '선택됨'.
+// - 반환: { present, found, selected, unselected, ok, sample }
+//     present=false → 配送方式 영역 없음(그대로 진행) / found=0 → 선택지를 못 찾음(경고 후 진행, sample 로그로 구조 확인)
+//     found>0 && unselected>0 → 선택 실패(호출측이 제출 전 중단)
+// ========================================
+const MERCHANT_DELIVERY_TEXT = '商家配送';
+
+async function scanMerchantDelivery(page, doClick) {
+  return await page.evaluate(({ target, doClick }) => {
+    const sections = [...document.querySelectorAll('official-delivery-method-pc')];
+    const deep = (root, out) => {
+      root.querySelectorAll('*').forEach(el => { out.push(el); if (el.shadowRoot) deep(el.shadowRoot, out); });
+      return out;
+    };
+    const hostOf = (n) => { const r = n.getRootNode && n.getRootNode(); return (r && r.host) ? r.host : null; };
+    const isSelected = (el) => {
+      let n = el;
+      for (let i = 0; i < 5 && n && n.nodeType === 1; i++) {
+        const cls = (n.getAttribute && n.getAttribute('class')) || '';
+        if (/(^|[\s_-])(selected|active|checked|current|is-checked|is-active|on)([\s_-]|$)/i.test(cls)) return true;
+        if (n.getAttribute && (n.getAttribute('aria-checked') === 'true' || n.getAttribute('aria-selected') === 'true' || n.getAttribute('checked') === 'true' || n.hasAttribute('checked') && n.getAttribute('checked') !== 'false')) return true;
+        const radio = n.querySelector && n.querySelector('input[type="radio"]');
+        if (radio && radio.checked) return true;
+        n = n.parentElement || hostOf(n);
+      }
+      return false;
+    };
+    const report = { present: sections.length > 0, sections: sections.length, found: 0, selected: 0, unselected: 0, clicked: 0, sample: '' };
+    sections.forEach((sec, si) => {
+      const all = deep(sec, []);
+      if (sec.shadowRoot) deep(sec.shadowRoot, all);
+      // target 텍스트를 정확히 가진 가장 안쪽 요소만 (부모·자식이 같은 텍스트면 자식 우선)
+      const cands = all.filter(el => (el.textContent || '').trim() === target
+        && ![...el.children].some(c => (c.textContent || '').trim() === target));
+      if (si === 0) {
+        const html = sec.shadowRoot ? sec.shadowRoot.innerHTML : sec.innerHTML;
+        report.sample = (html || '').replace(/\s+/g, ' ').slice(0, 700);
+      }
+      cands.forEach(el => {
+        report.found++;
+        if (isSelected(el)) { report.selected++; return; }
+        report.unselected++;
+        if (!doClick) return;
+        // 클릭 대상: label / radio·option·item 류 조상이 있으면 그것, 없으면 자기 자신
+        let clickEl = el;
+        let n = el;
+        for (let i = 0; n && i < 3; i++) {
+          const cls = (n.getAttribute && n.getAttribute('class')) || '';
+          if (n.tagName === 'LABEL' || /radio|option|item|choice|method/i.test(cls)) { clickEl = n; break; }
+          n = n.parentElement || hostOf(n);
+        }
+        try { clickEl.click(); report.clicked++; } catch (_) {}
+      });
+    });
+    return report;
+  }, { target: MERCHANT_DELIVERY_TEXT, doClick });
+}
+
+async function selectMerchantDelivery(page) {
+  let r = await scanMerchantDelivery(page, true);
+  if (!r.present) {
+    console.log('  [配送方式] 영역 없음 — 건너뜀');
+    return { present: false, found: 0, selected: 0, unselected: 0, ok: true, sample: '' };
+  }
+  console.log(`  [配送方式] sections=${r.sections}, found=${r.found}, already=${r.selected}, clicked=${r.clicked}`);
+  if (r.found === 0) {
+    console.log(`  [配送方式] ! "${MERCHANT_DELIVERY_TEXT}" 선택지를 찾지 못함 — 구조 확인용 샘플: ${r.sample}`);
+    return { present: true, found: 0, selected: 0, unselected: 0, ok: false, unknownMarkup: true, sample: r.sample };
+  }
+  if (r.clicked > 0) await page.waitForTimeout(700);
+
+  // 재확인 (클릭 없이 상태만)
+  let v = await scanMerchantDelivery(page, false);
+  if (v.unselected > 0) {
+    // 폴백: Playwright 로케이터(open shadow DOM 투과) 로 개별 클릭
+    console.log(`  [配送方式] ${v.unselected}개 미선택 → Playwright 클릭 폴백`);
+    const loc = page.locator('official-delivery-method-pc').locator(`:text-is("${MERCHANT_DELIVERY_TEXT}")`);
+    const n = await loc.count().catch(() => 0);
+    for (let i = 0; i < n; i++) {
+      try { await loc.nth(i).click({ timeout: 3000 }); } catch (_) {}
+    }
+    await page.waitForTimeout(700);
+    v = await scanMerchantDelivery(page, false);
+  }
+  const ok = v.found > 0 && v.unselected === 0;
+  console.log(`  [配送方式] 결과: found=${v.found}, selected=${v.selected}, unselected=${v.unselected} → ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) console.log(`  [配送方式] 샘플: ${v.sample}`);
+  return { present: true, found: v.found, selected: v.selected, unselected: v.unselected, ok, sample: v.sample };
 }
 
 // ========================================
