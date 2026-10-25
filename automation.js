@@ -2534,8 +2534,25 @@ async function inputRefCodesV2(groupedData, userCode) {
         if (e.message === 'STOPPED_BY_USER') throw e;
         console.log('  Warning: Shop containers not found, waiting anyway...');
       }
-      await page.waitForTimeout(5000);
-      console.log('+ Page fully loaded (5s wait)');
+      // 고정 5초 대기 → 조건 대기 (2026-10-25):
+      //   상점 수가 500ms 간격 3회 연속 동일 + 하단 바(结算 버튼) 렌더링 → 준비 완료로 판단.
+      //   최소 1초는 기다리고, 최대 8초를 넘기면 기존처럼 그냥 진행한다.
+      {
+        const readyStart = Date.now();
+        let prevShops = -1, stable = 0;
+        while (Date.now() - readyStart < 8000) {
+          checkShouldStop();
+          await page.waitForTimeout(500);
+          const st = await page.evaluate(() => ({
+            shops: document.querySelectorAll('[class*="shop-container--container"]').length,
+            bar: !!document.querySelector('[class*="bottom-bar--submitBtn"]')
+          })).catch(() => ({ shops: -1, bar: false }));
+          stable = (st.shops === prevShops && st.shops >= 0) ? stable + 1 : 0;
+          prevShops = st.shops;
+          if (stable >= 2 && st.bar && Date.now() - readyStart >= 1000) break;
+        }
+        console.log(`+ Cart page ready (${Date.now() - readyStart}ms, shops=${prevShops})`);
+      }
 
       // ── Section 2.5: 상점 존재 여부 확인 ──
       const shopSelector = '[class*="shop-container--container"]';
@@ -2602,8 +2619,24 @@ async function inputRefCodesV2(groupedData, userCode) {
         console.log('  Warning: .order-inner not found, trying alternative...');
         await page.waitForTimeout(5000);
       }
-      await page.waitForTimeout(2000);
-      console.log('+ Order confirmation page ready');
+      // 고정 2초 대기 → 조건 대기 (2026-10-25): 모든 주문 블록에 메모 textarea 가 렌더링될 때까지
+      //   (.order-inner 수 == textarea 수, 500ms 간격 2회 연속 동일). 최대 6초, 미충족 시 그대로 진행.
+      {
+        const readyStart = Date.now();
+        let prev = null, stable = 0;
+        while (Date.now() - readyStart < 6000) {
+          checkShouldStop();
+          await page.waitForTimeout(500);
+          const st = await page.evaluate(() => ({
+            inners: document.querySelectorAll('.order-inner').length,
+            tas: document.querySelectorAll('.order-inner .order-footer .leave-message-container .q-textarea textarea').length
+          })).catch(() => null);
+          if (st && prev && st.inners === prev.inners && st.tas === prev.tas) stable++; else stable = 0;
+          prev = st;
+          if (st && st.inners > 0 && st.tas === st.inners && stable >= 1) break;
+        }
+        console.log(`+ Order confirmation page ready (${Date.now() - readyStart}ms, orders=${prev?.inners}, textareas=${prev?.tas})`);
+      }
 
       // ── Section 5: 참조코드 입력 ──
       console.log('\nSection 5: Inputting reference codes...');
@@ -2740,7 +2773,13 @@ async function inputRefCodesV2(groupedData, userCode) {
 
       // ── Phase 3: 계산된 memoText로 textarea 일괄 입력 ──
       console.log(`  [Batch] Filling ${textareaMap.size}/${orderCount} textarea(s)...`);
+      // (2026-10-25) 주문마다 붙던 scrollIntoView/click/대기(약 0.8초) 제거.
+      //   Playwright fill() 이 스크롤·포커스·input 이벤트를 자체 처리하므로 fill 만 순서대로 실행하고,
+      //   값 검증은 아래 Section 5.5 의 1회 일괄 읽기에서 memoText 와 비교한다.
+      //   입력 방식 자체(fill)는 그대로라 1688 측 메모 반영 동작은 변하지 않는다.
+      const fillStart = Date.now();
       for (const [orderIdx, memoText] of textareaMap) {
+        checkShouldStop();
         const orderInner = orderInners.nth(orderIdx);
         const textarea = orderInner.locator('.order-footer .leave-message-container .q-textarea textarea').first();
 
@@ -2748,73 +2787,56 @@ async function inputRefCodesV2(groupedData, userCode) {
           console.log(`  Order ${orderIdx + 1}: X Textarea not found`);
           continue;
         }
-
-        await textarea.scrollIntoViewIfNeeded();
-        await page.waitForTimeout(300);
-        await textarea.click();
-        await page.waitForTimeout(200);
-        await textarea.fill(memoText);
-        await page.waitForTimeout(300);
-
-        const inputValue = await textarea.inputValue();
-        if (inputValue === memoText) {
-          console.log(`  Order ${orderIdx + 1}: + Input OK (${inputValue.length} chars)`);
-        } else {
-          console.log(`  Order ${orderIdx + 1}: ! Mismatch (expected: ${memoText.length}, got: ${inputValue.length})`);
-        }
+        await textarea.fill(memoText, { timeout: 10000 });
       }
+      console.log(`  [Batch] fill done in ${Date.now() - fillStart}ms`);
 
       // ── Section 5.5: 빈 textarea 확인 → 있으면 제출 없이 즉시 중단 ──
       console.log('\n--- Checking for empty textareas ---');
       emptyTextareaCount = 0;
       emptySellerNames.length = 0;
 
-      const orderGroups = page.locator('.order-group-container');
-      const orderGroupCount = await orderGroups.count();
-      totalTextareas = orderGroupCount;
+      // (2026-10-25) 주문마다 2~3회 왕복하던 검사 → 1회 evaluate 로 판매자명/메모값/offerId 를 모두 읽는다.
+      //   같은 결과로 ① 빈 textarea 판정 ② Phase 3 입력값 검증(memoText 와 일치) 을 함께 수행.
+      const groupStates = await page.evaluate(() => {
+        return [...document.querySelectorAll('.order-group-container')].map(g => {
+          const shopLink = g.querySelector('.order-group-header .shop-title .shop-link');
+          const ta = g.querySelector('.order-footer .leave-message-container .q-textarea textarea');
+          const offerIds = [...g.querySelectorAll('.offer-container a[href*="offer/"]')]
+            .map(a => (a.getAttribute('href') || '').match(/offer\/(\d+)\.html/))
+            .filter(Boolean).map(m => m[1]);
+          return {
+            sellerName: shopLink ? (shopLink.textContent || '').trim() : 'Unknown Seller',
+            hasTextarea: !!ta,
+            value: ta ? ta.value : null,
+            offerIds: [...new Set(offerIds)]
+          };
+        });
+      });
+      totalTextareas = groupStates.length;
 
-      for (let orderIdx = 0; orderIdx < orderGroupCount; orderIdx++) {
-        const orderGroup = orderGroups.nth(orderIdx);
-
-        const shopLink = orderGroup.locator('.order-group-header .shop-title .shop-link').first();
-        let sellerName = 'Unknown Seller';
-
-        if (await shopLink.count() > 0) {
-          sellerName = await shopLink.innerText().catch(() => 'Unknown Seller');
-          sellerName = sellerName.trim();
-        }
-
-        const textarea = orderGroup.locator('.order-footer .leave-message-container .q-textarea textarea').first();
-
-        if (await textarea.count() > 0) {
-          const value = await textarea.inputValue();
-          if (!value || value.trim() === '') {
-            emptyTextareaCount++;
-            emptySellerNames.push(sellerName);
-            console.log(`  Order ${orderIdx + 1} (${sellerName}): EMPTY`);
-
-            const offerContainers = orderGroup.locator('.offer-container');
-            const offerCount = await offerContainers.count();
-            for (let offerIdx = 0; offerIdx < offerCount; offerIdx++) {
-              const offerContainer = offerContainers.nth(offerIdx);
-              const offerLink = offerContainer.locator('a[href*="offer/"]').first();
-              if (await offerLink.count() > 0) {
-                const href = await offerLink.getAttribute('href');
-                const offerIdMatch = href.match(/offer\/(\d+)\.html/);
-                if (offerIdMatch) {
-                  const offerId = offerIdMatch[1];
-                  const groupInfo = groupedData[offerId];
-                  if (groupInfo && groupInfo.orderIndexes) {
-                    failedOrderIndexes.push(...groupInfo.orderIndexes);
-                  }
-                }
-              }
-            }
-          } else {
-            console.log(`  Order ${orderIdx + 1} (${sellerName}): Has content (${value.length} chars)`);
-          }
-        }
+      // Phase 3 입력값 검증 (order-inner 순서 == order-group-container 순서 가정, 기존 로직과 동일한 전제)
+      for (const [orderIdx, memoText] of textareaMap) {
+        const st = groupStates[orderIdx];
+        if (!st || !st.hasTextarea) { console.log(`  Order ${orderIdx + 1}: ! textarea not found at verify`); continue; }
+        if (st.value === memoText) console.log(`  Order ${orderIdx + 1}: + Input OK (${memoText.length} chars)`);
+        else console.log(`  Order ${orderIdx + 1}: ! Mismatch (expected: ${memoText.length}, got: ${(st.value || '').length})`);
       }
+
+      groupStates.forEach((st, orderIdx) => {
+        if (!st.hasTextarea) return;
+        if (!st.value || st.value.trim() === '') {
+          emptyTextareaCount++;
+          emptySellerNames.push(st.sellerName);
+          console.log(`  Order ${orderIdx + 1} (${st.sellerName}): EMPTY`);
+          st.offerIds.forEach(offerId => {
+            const groupInfo = groupedData[offerId];
+            if (groupInfo && groupInfo.orderIndexes) failedOrderIndexes.push(...groupInfo.orderIndexes);
+          });
+        } else {
+          console.log(`  Order ${orderIdx + 1} (${st.sellerName}): Has content (${st.value.length} chars)`);
+        }
+      });
 
       // 빈 textarea 발견 → 제출하지 않고 루프 종료
       if (emptyTextareaCount > 0) {
