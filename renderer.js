@@ -5196,11 +5196,21 @@ async function processDeductExcelV2(file) {
     const data = await file.arrayBuffer();
     const workbook = XLSX.read(data, { type: 'array' });
     const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    // (2026-10-25) 여러 주문건이 섞인 엑셀 대응: 1688 주문 단위로 현재 주문코드만 합산.
+    //   교차검증용 집합 — 주문번호 등록 단계의 1688 주문번호 / 현재 주문목록의 offer_id
+    const session1688OrderIds = new Set(
+      orders.map(o => o?.dbData?.['1688_order_id']).filter(v => v && String(v).trim()).map(v => String(v).trim())
+    );
+    const sessionOfferIds = new Set(
+      orders.map(o => { const m = (o?.url || '').match(/offer\/(\d+)\.html/); return m ? m[1] : ''; }).filter(Boolean)
+    );
     let calc;
     try {
       calc = DeductParser.parseDeductWorksheet(worksheet, XLSX, {
         currentOrderCodes: collectCurrentOrderCodes(),
         selectedUserCode: userCode,
+        session1688OrderIds,
+        sessionOfferIds,
       });
     } catch (e) {
       if (e instanceof DeductParser.DeductParseError) { alert(e.message); return; }
@@ -5238,19 +5248,38 @@ async function processDeductExcelV2(file) {
       return;
     }
 
-    // ── 4) 확인 ──
+    // ── 4) 확인 (분류 결과 + 교차검증 경고 포함) ──
+    const exByCode = Object.entries(calc.excluded.byCode).map(([c, n]) => `${c} ${n}건`).join(', ');
+    const excludedLine = calc.excluded.orders > 0
+      ? `제외: 1688 주문 ${calc.excluded.orders}건` +
+        `${exByCode ? ` (다른 주문코드: ${exByCode})` : ''}${calc.excluded.noMemo ? ` (메모 없음 ${calc.excluded.noMemo}건)` : ''}\n`
+      : `제외: 없음 (엑셀 전체가 이 주문)\n`;
+    const crossLine = calc.crossCheck.checked1688
+      ? (calc.crossCheck.missingInExcel.length || calc.crossCheck.notInSession.length ? '교차검증(1688 주문번호): ⚠ 불일치\n' : '교차검증(1688 주문번호): 일치\n')
+      : '교차검증(1688 주문번호): 생략 (주문번호 등록 안 됨)\n';
     const proceed = confirm(
       `차감을 진행합니다.\n\n` +
       `주문코드: ${calc.orderCode}\n` +
       `사업자: ${venderName} (${userCode})\n` +
       `차감액: ¥${calc.amount.toLocaleString()}\n` +
       `  상품가 ¥${calc.price.toLocaleString()} + 배송비 ¥${calc.delivery_fee.toLocaleString()} + 수수료 ¥${calc.service_fee.toLocaleString()}\n` +
-      `수량: ${calc.item_qty}개 / 1688 주문 ${calc.orderNos1688.length}건\n\n` +
-      `진행할까요?`
+      `수량: ${calc.item_qty}개 / 포함 1688 주문 ${calc.included.orders}건 (${calc.included.rows}행)\n` +
+      excludedLine + crossLine +
+      (calc.warnings.length ? `\n⚠ 경고\n${calc.warnings.map(w => '  · ' + w).join('\n')}\n` : '') +
+      `\n진행할까요?`
     );
     if (!proceed) {
       alert('차감이 취소되었습니다.');
       return;
+    }
+    // 경고가 있으면 한 번 더 확인 (누락/오기재 가능성)
+    if (calc.warnings.length) {
+      const detail = [];
+      if (calc.crossCheck.missingInExcel.length) detail.push(`엑셀에 없는 1688 주문: ${calc.crossCheck.missingInExcel.slice(0, 10).join(', ')}${calc.crossCheck.missingInExcel.length > 10 ? ' …' : ''}`);
+      if (calc.crossCheck.notInSession.length)   detail.push(`주문목록에 없는 1688 주문: ${calc.crossCheck.notInSession.slice(0, 10).join(', ')}${calc.crossCheck.notInSession.length > 10 ? ' …' : ''}`);
+      if (calc.crossCheck.unknownOffers.length)  detail.push(`주문목록에 없는 Offer ID: ${calc.crossCheck.unknownOffers.slice(0, 10).join(', ')}${calc.crossCheck.unknownOffers.length > 10 ? ' …' : ''}`);
+      const again = confirm(`⚠ 교차검증 경고가 있습니다.\n\n${detail.join('\n')}\n\n내용을 확인했고 그대로 차감을 진행할까요?`);
+      if (!again) { alert('차감이 취소되었습니다.'); return; }
     }
 
     // ── 5) RPC v2 (한 트랜잭션) ──
