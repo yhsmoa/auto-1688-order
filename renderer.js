@@ -80,14 +80,19 @@ function applyOrderUnlockState() {
 //         ft_orders 가격 4필드 UPDATE 까지 한 트랜잭션. 구 원장(invoiceManager_transactions) 기록 안 함.
 //   · V1 차감(btnDeduct, 구 원장 기록)은 제거됨 — 구 원장은 DB 에서 읽기 전용 (2026-09-28).
 //   · 신 원장이 유일한 기준. 문제 발생 시 대체 경로 없이 alert 후 중단.
+//
+// 저장 (2026-10-25): 모든 그룹 btnSaveV2(ft_orders/ft_order_items) 만 노출.
+//   · 구 저장(btnSaveSupabase → invoiceManager_1688_orders)은 버튼·모달 경로 모두 제거.
+//     (해당 테이블 마지막 기록 2026-06-26 — 미사용 확인) 함수 saveToSupabase 는 참고용으로만 남겨 둔다.
+//   · 종료 확인 모달도 "저장" 버튼 없이 취소/저장하지 않고 종료 만 제공 (saveAndExit 미사용).
 // ════════════════════════════════════════════════════════════
 // 중단 버튼(btnStop, btnStopV2)은 작업 진행 상태에 따라 자체 제어되므로
 // user_code 그룹 가시성 토글 대상에서 분리
 const USER_CODE_BUTTON_VISIBILITY = {
   HI: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
   MB: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  BR: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  BR: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
   BO: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
 };
 
@@ -98,7 +103,7 @@ const ALL_RP_ORDER_BUTTONS = [
   'btnRangeSelect', 'btnRangeDeselect',
   'btnSkip', 'btnStart', 'btnReview',
   'btnRefCode', 'btnRefCodeV2',
-  'btnOrderNumber', 'btnSaveSupabase', 'btnSaveV2',
+  'btnOrderNumber', 'btnSaveV2',
   'btnDeductV2',
   'btnExportSuccess', 'btnExportFail', 'btnExportFailV2'
 ];
@@ -232,7 +237,6 @@ function updateButtonSteps() {
   const btnRefCode      = document.getElementById('btnRefCode');
   const btnRefCodeV2    = document.getElementById('btnRefCodeV2');
   const btnOrderNumber  = document.getElementById('btnOrderNumber');
-  const btnSaveSupabase = document.getElementById('btnSaveSupabase');
   const btnSaveV2       = document.getElementById('btnSaveV2');
   const btnDeductV2     = document.getElementById('btnDeductV2');
   const btnExportSuccess  = document.getElementById('btnExportSuccess');
@@ -244,7 +248,7 @@ function updateButtonSteps() {
     btnSave, btnSkip, btnStart, btnReview,
     btnRefCode, btnRefCodeV2,
     btnOrderNumber,
-    btnSaveSupabase, btnSaveV2,
+    btnSaveV2,
     btnDeductV2,
     btnExportSuccess, btnExportFail, btnExportFailV2
   ];
@@ -292,14 +296,12 @@ function updateButtonSteps() {
   if (stepStatus.orderNumber) {
     btnOrderNumber?.classList.add('completed');
     if (!stepStatus.save) {
-      btnSaveSupabase?.classList.add('next');
       btnSaveV2?.classList.add('next');
     }
   }
 
   // 저장(save) 단계 — V1/V2 동시 처리
   if (stepStatus.save) {
-    btnSaveSupabase?.classList.add('completed');
     btnSaveV2?.classList.add('completed');
     if (!stepStatus.deduct) {
       btnDeductV2?.classList.add('next');
@@ -583,7 +585,8 @@ function closeSaveConfirmModal() {
   pendingAction = null;
 }
 
-// 저장 후 종료/새로고침
+// (미사용, 2026-10-25) 종료 모달의 "저장" 버튼 제거 — 구 저장(V1) 경로가 뒷문으로 실행되는 것을 막음.
+//  저장은 우측 패널 [V2 저장] 으로만 한다. 참고용으로 함수만 남긴다.
 async function saveAndExit() {
   closeSaveConfirmModal();
   await saveToSupabase();
@@ -4605,6 +4608,11 @@ document.getElementById('searchInput').addEventListener('keydown', (e) => {
 // Supabase에 저장
 async function saveToSupabase() {
   const saveBtn = document.getElementById('btnSaveSupabase');
+  // 2026-10-25: 구 저장 버튼 제거 — 버튼이 없으면 어떤 경로로 불려도 실행하지 않는다.
+  if (!saveBtn) {
+    alert('구 저장(V1)은 제거되었습니다. 우측 패널의 [V2 저장]을 사용하세요.');
+    return;
+  }
   const originalText = saveBtn.textContent;
 
   if (!supabaseClient) {
