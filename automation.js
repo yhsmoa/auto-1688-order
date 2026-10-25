@@ -868,6 +868,14 @@ async function processGroupOrder(page, group, onProgress) {
     return;
   }
 
+  // (2026-10-25) 1688 이 다른 offer_id 로 리다이렉트한 경우 최종 offer_id 를 기록 → 검수 매칭에서 둘 다 허용
+  //   (status 없이 보내므로 렌더러는 상태를 바꾸지 않고 canonicalOfferId 만 저장)
+  const finalOfferId = extractOfferId(page.url());
+  if (finalOfferId && finalOfferId !== offerId) {
+    console.log(`  ! offer_id redirected: ${offerId} → ${finalOfferId}`);
+    items.forEach(item => item.orderIndices.forEach(idx => onProgress({ index: idx, canonicalOfferId: finalOfferId })));
+  }
+
   // 상품 하가(下架) 체크
   const offlineTitle = await page.locator('h3.mod-detail-offline-title').count();
   if (offlineTitle > 0) {
@@ -1293,6 +1301,17 @@ async function startReview(orders, onReviewProgress) {
   //  엔드포인트가 확정되면 CART_API_CAPTURE 를 false 로 바꿔 끈다.
   const CART_API_CAPTURE = true;
   const apiCapture = [];
+  // (2026-10-25) 장바구니 전체 종류 수 — quickCartCount.jsx 응답의 sumOfKind. DOM 추출 수와 비교해 누락을 감지한다.
+  let cartKindCount = null;
+  const onCountResponse = async (res) => {
+    try {
+      if (!/quickCartCount\.jsx/.test(res.url())) return;
+      const t = await res.text();
+      const m = t.match(/"sumOfKind"\s*:\s*(\d+)/);
+      if (m) { cartKindCount = parseInt(m[1], 10); console.log(`  [cart-count] sumOfKind = ${cartKindCount}`); }
+    } catch (_) {}
+  };
+  page.on('response', onCountResponse);
   const onCaptureResponse = async (res) => {
     try {
       const url = res.url();
@@ -1306,6 +1325,8 @@ async function startReview(orders, onReviewProgress) {
         const text = await res.text();
         entry.size = text.length;
         entry.preview = text.slice(0, 1500);
+        // (2026-10-25) 장바구니 데이터 API 는 본문 전체 저장 — 구조 분석(네트워크 기반 검수) 용
+        if (/mtoppurchaseastoreservice\.(render|async|asyncload)/i.test(url)) entry.body = text;
         // JSONP(callback({...})) 또는 JSON 이면 최상위 키 기록
         const jsonText = text.replace(/^[^{[]*/, '').replace(/[^}\]]*$/, '');
         try { const j = JSON.parse(jsonText); entry.topKeys = Array.isArray(j) ? ['<array>'] : Object.keys(j).slice(0, 30); } catch (_) {}
@@ -1314,6 +1335,7 @@ async function startReview(orders, onReviewProgress) {
     } catch (_) { /* 수집 실패는 검수에 영향 주지 않음 */ }
   };
   const flushApiCapture = () => {
+    try { page.off('response', onCountResponse); } catch (_) {}
     if (!CART_API_CAPTURE) return;
     try { page.off('response', onCaptureResponse); } catch (_) {}
     try {
@@ -1347,10 +1369,19 @@ async function startReview(orders, onReviewProgress) {
     await page.waitForTimeout(2000);  // 추가 로딩 대기
     console.log('+ Page loaded');
 
-    // 2. 페이지 맨 아래까지 천천히 스크롤 (동적 데이터 로딩)
+    // (2026-10-25) 스크롤 중 누적 추출 — 가상 스크롤/부분 렌더링으로 화면에서 빠진 항목까지 모은다.
+    //   키: offerId|color|size|sellerName. 같은 키는 나중 값(체크 상태 등)으로 갱신.
+    const accumulated = new Map();
+    const cartKey = (it) => `${it.offerId}|${it.color}|${it.size}|${it.sellerName}`;
+    const accumulate = async () => {
+      const raw = await extractCartDataRaw(page).catch(() => []);
+      raw.forEach(it => { if (it.offerId) accumulated.set(cartKey(it), { ...it, fromScroll: true }); });
+    };
+
+    // 2. 페이지 맨 아래까지 천천히 스크롤 (동적 데이터 로딩) + 누적 추출
     console.log('\nStep 2: Scrolling to bottom...');
-    await smoothScrollToBottom(page);
-    console.log('+ Scrolled to bottom');
+    await smoothScrollToBottom(page, accumulate);
+    console.log(`+ Scrolled to bottom (accumulated ${accumulated.size} item(s))`);
 
     // 3. 페이지 맨 위로 스크롤
     console.log('\nStep 3: Scrolling to top...');
@@ -1414,6 +1445,46 @@ async function startReview(orders, onReviewProgress) {
       console.log(`+ Re-extracted ${cartItems.length} items from cart`);
     }
 
+    // ── (2026-10-25) 누적분 병합 + 완전성 검사 ──
+    //   ① 최종 DOM 에 없는 누적 항목(스크롤 중에만 보였던 것)이 있으면 가상 스크롤로 판단 →
+    //      全选 이후 상태로 다시 한 번 스크롤하며 누적해 체크 상태를 갱신한 뒤 병합
+    //   ② 전체 종류 수(sumOfKind)보다 적게 읽혔으면 최대 2회 추가 스크롤 패스
+    const finalKeys = new Set(cartItems.map(cartKey));
+    let missingFromDom = [...accumulated.keys()].filter(k => !finalKeys.has(k)).length;
+    const kindsOf = (list) => new Set(list.map(cartKey)).size;
+    let passes = 0;
+    while (passes < 2) {
+      const kinds = kindsOf([...cartItems, ...accumulated.values()]);
+      const needByCount = cartKindCount !== null && kinds < cartKindCount;
+      if (!needByCount && missingFromDom === 0) break;
+      passes++;
+      console.log(`  Coverage pass ${passes}: kinds=${kinds}/${cartKindCount ?? '?'}, scroll-only items=${missingFromDom} → re-scanning...`);
+      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      await page.waitForTimeout(800);
+      await smoothScrollToBottom(page, accumulate);
+      const again = await extractCartDataRaw(page).catch(() => []);
+      again.forEach(it => { if (it.offerId) accumulated.set(cartKey(it), { ...it, fromScroll: true }); });
+      const afterKeys = new Set(again.map(cartKey));
+      missingFromDom = [...accumulated.keys()].filter(k => !afterKeys.has(k)).length;
+      if (again.length >= cartItems.length) cartItems = again;
+    }
+    // 병합: 최종 DOM 항목 우선, 누적분 중 DOM 에 없는 것 추가
+    {
+      const merged = [...cartItems];
+      const have = new Set(cartItems.map(cartKey));
+      accumulated.forEach((it, k) => { if (!have.has(k)) merged.push(it); });
+      if (merged.length !== cartItems.length) console.log(`  + Merged ${merged.length - cartItems.length} scroll-only item(s) into cart list`);
+      cartItems = merged;
+    }
+    const coverage = {
+      expected: cartKindCount,
+      got: kindsOf(cartItems),
+      unidentified: cartItems.filter(it => !it.offerId).length,
+      passes,
+      incomplete: cartKindCount !== null && kindsOf(cartItems) < cartKindCount
+    };
+    console.log(`  Coverage: kinds ${coverage.got}/${coverage.expected ?? '?'}, unidentified=${coverage.unidentified}, passes=${passes}, incomplete=${coverage.incomplete}`);
+
     // 디버깅: 추출된 아이템 로그
     if (cartItems.length > 0) {
       console.log('  Cart items found:');
@@ -1448,29 +1519,37 @@ async function startReview(orders, onReviewProgress) {
 
     // 6. 주문 데이터와 비교
     console.log('\nStep 6: Comparing with order data...');
-    const comparisonResults = compareOrdersWithCart(orders, cartItems, onReviewProgress);
+    const comparisonResults = compareOrdersWithCart(orders, cartItems, onReviewProgress, { coverage });
 
     console.log('\n========================================');
     console.log('REVIEW PROCESS COMPLETED');
-    console.log(`Matched: ${comparisonResults.matched}, Mismatched: ${comparisonResults.mismatched}, Not Found: ${comparisonResults.notFound}`);
+    console.log(`Matched: ${comparisonResults.matched}, Mismatched: ${comparisonResults.mismatched}, Not Found: ${comparisonResults.notFound}, Unknown: ${comparisonResults.unknown || 0}`);
     console.log('========================================');
 
     flushApiCapture();   // [조사용] 장바구니 API 응답 기록 저장
-    return { success: true, cartItems, comparisonResults };
+    return { success: true, cartItems, comparisonResults, coverage };
 
   } catch (error) {
     console.log(`\nX Review failed: ${error.message}`);
+    try { page.off('response', onCountResponse); } catch (_) {}
     throw error;
   }
 }
 
 // 주문 데이터와 카트 데이터 비교 함수 (그룹화 버전 - 일괄 처리)
-function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
+//  opts.coverage.incomplete 가 true 면 "카트에 없음" 을 오류가 아닌 '미확인'(reviewStatus '' + reviewResult.unknown) 으로 기록
+//  — 장바구니를 전부 읽지 못한 상태에서 없다고 단정하지 않는다 (2026-10-25)
+function compareOrdersWithCart(orders, cartItems, onReviewProgress, opts = {}) {
   console.log('  Comparing orders with cart items (grouped by offer_id + option)...');
+  const incomplete = !!(opts.coverage && opts.coverage.incomplete);
 
   let matched = 0;
   let mismatched = 0;
   let notFound = 0;
+  let unknown = 0;
+  const notFoundResult = (idx) => incomplete
+    ? { index: idx, reviewStatus: '', reviewResult: { unknown: true, notFound: true, message: '미확인 — 장바구니 일부만 읽음' } }
+    : { index: idx, reviewStatus: 'error', reviewResult: { notFound: true, message: '카트에 없음' } };
 
   // 결과를 일괄 저장할 배열
   const allResults = [];
@@ -1507,6 +1586,7 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
     if (!orderGroups[groupKey]) {
       orderGroups[groupKey] = {
         offerId,
+        altOfferIds: new Set(),  // 주문 시 리다이렉트된 최종 offer_id (canonicalOfferId) — 매칭에 함께 허용
         color: order.color,
         size: order.size,
         totalQuantity: 0,        // 활성 행 수량 합계
@@ -1515,6 +1595,7 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
         cancelledItemNos: []
       };
     }
+    if (order.canonicalOfferId && order.canonicalOfferId !== offerId) orderGroups[groupKey].altOfferIds.add(order.canonicalOfferId);
 
     if (isCancelledOrder(order)) {
       orderGroups[groupKey].cancelledIndices.push(index);
@@ -1578,8 +1659,8 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
     console.log(`\n  Group: offerId=${offerId}, color=${color}, size=${size}, totalQty=${totalQuantity}`);
     console.log(`    Order indices: ${orderIndices.join(', ')}`);
 
-    // 카트에서 해당 offer_id를 가진 아이템들 찾기 (이미 매칭된 아이템 제외)
-    const allItemsWithOfferId = cartItems.filter(item => item.offerId === offerId);
+    // 카트에서 해당 offer_id(또는 리다이렉트된 최종 offer_id)를 가진 아이템들 찾기 (이미 매칭된 아이템 제외)
+    const allItemsWithOfferId = cartItems.filter(item => item.offerId === offerId || group.altOfferIds.has(item.offerId));
     const candidateItems = allItemsWithOfferId.filter(item => !matchedCartItems.has(item));
 
     if (allItemsWithOfferId.length > candidateItems.length) {
@@ -1590,15 +1671,9 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
       const reason = allItemsWithOfferId.length === 0
         ? 'no matching offer_id'
         : 'all matching items already used';
-      console.log(`    NOT FOUND in cart (${reason})`);
-      notFound += orderIndices.length;
-      orderIndices.forEach(idx => {
-        allResults.push({
-          index: idx,
-          reviewStatus: 'error',
-          reviewResult: { notFound: true, message: '카트에 없음' }
-        });
-      });
+      console.log(`    NOT FOUND in cart (${reason})${incomplete ? ' — coverage incomplete → unknown' : ''}`);
+      if (incomplete) unknown += orderIndices.length; else notFound += orderIndices.length;
+      orderIndices.forEach(idx => allResults.push(notFoundResult(idx)));
       markCancelledRows(group, null);   // 취소 행: 장바구니에 없음 = 정상
       return;
     }
@@ -1694,15 +1769,9 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
 
     // 여전히 찾지 못한 경우
     if (!cartItem) {
-      console.log(`    NOT FOUND in cart (even after reversing color/size)`);
-      notFound += orderIndices.length;
-      orderIndices.forEach(idx => {
-        allResults.push({
-          index: idx,
-          reviewStatus: 'error',
-          reviewResult: { notFound: true, message: '카트에 없음' }
-        });
-      });
+      console.log(`    NOT FOUND in cart (even after reversing color/size)${incomplete ? ' — coverage incomplete → unknown' : ''}`);
+      if (incomplete) unknown += orderIndices.length; else notFound += orderIndices.length;
+      orderIndices.forEach(idx => allResults.push(notFoundResult(idx)));
       markCancelledRows(group, null);   // 취소 행: 장바구니에 없음 = 정상
       return;
     }
@@ -1804,7 +1873,7 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
   //    (이전 세션 잔여물 등 — 전체선택 결제 시 함께 결제되므로 반드시 보고)
   //    주문 불가(isDisabled) 상품은 결제되지 않으므로 제외
   cartItems.forEach(ci => {
-    if (matchedCartItems.has(ci) || ci.isDisabled) return;
+    if (matchedCartItems.has(ci) || ci.isDisabled || ci.unidentified) return;
     extraItems.push({
       kind: 'not_in_list',
       ...cartItemLabel(ci),
@@ -1814,13 +1883,13 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress) {
     console.log(`    NOT IN ORDER LIST - cart has offer=${ci.offerId} ${ci.color}/${ci.size} x${ci.quantity}`);
   });
 
-  console.log(`\n  Comparison complete: ${matched} matched, ${mismatched} mismatched, ${notFound} not found, ${extraItems.length} extra in cart`);
+  console.log(`\n  Comparison complete: ${matched} matched, ${mismatched} mismatched, ${notFound} not found, ${unknown} unknown, ${extraItems.length} extra in cart`);
 
   // 모든 결과를 한 번에 전송 (batch 모드)
   console.log(`  Sending ${allResults.length} results in batch mode...`);
   onReviewProgress({ batch: true, results: allResults });
 
-  return { matched, mismatched, notFound, extraItems };
+  return { matched, mismatched, notFound, unknown, extraItems };
 }
 
 // 사이즈 매칭 체크 함수
@@ -1973,10 +2042,9 @@ async function selectAllCheckbox(page) {
 }
 
 // 카트 데이터 추출 함수
-async function extractCartData(page) {
-  console.log('  Parsing cart items...');
-
-  const cartItems = await page.evaluate(() => {
+// 장바구니 DOM 추출 (evaluate 1회, 로그 없음) — 스크롤 중 누적 추출에서 반복 호출
+async function extractCartDataRaw(page) {
+  return await page.evaluate(() => {
     const items = [];
 
     // 체크박스가 있는 td 요소들을 찾아서 각 아이템 처리
@@ -2045,6 +2113,7 @@ async function extractCartData(page) {
       let productName = '';
 
       const itemGroup = tr.closest('[class*="item-group"]');
+      let unidentified = false;
       if (itemGroup) {
         const titleLink = itemGroup.querySelector('a[class*="title"][href*="detail.1688.com/offer/"]');
         if (titleLink) {
@@ -2055,9 +2124,28 @@ async function extractCartData(page) {
             offerId = offerMatch[1];
           }
         }
+        // (2026-10-25) 폴백: 제목 링크 클래스가 달라도 offer 링크/데이터 속성이 있으면 식별
+        if (!offerId) {
+          const anyLink = [...itemGroup.querySelectorAll('a[href*="offer/"]')]
+            .map(a => (a.getAttribute('href') || '').match(/offer\/(\d+)\.html/)).find(Boolean);
+          if (anyLink) {
+            offerId = anyLink[1];
+            productUrl = productUrl || `https://detail.1688.com/offer/${offerId}.html`;
+            if (!productName) {
+              const t = itemGroup.querySelector('a[class*="title"], [class*="title"]');
+              productName = t ? (t.textContent || '').trim() : '';
+            }
+          }
+        }
+        if (!offerId) {
+          const dataEl = itemGroup.querySelector('[data-offer-id], [data-offerid]');
+          const v = dataEl ? (dataEl.getAttribute('data-offer-id') || dataEl.getAttribute('data-offerid')) : '';
+          if (v && /^\d+$/.test(v)) offerId = v;
+        }
       }
 
-      if (!offerId) return;
+      // 식별 불가 항목도 버리지 않고 보고한다 (offerId '' + unidentified) — 매칭에는 쓰이지 않음
+      if (!offerId) unidentified = true;
 
       // 수량 찾기 - tr 내에서 input 찾기
       let quantity = 0;
@@ -2094,12 +2182,20 @@ async function extractCartData(page) {
         unitPrice,
         subtotal,
         isChecked,
-        isDisabled
+        isDisabled,
+        unidentified
       });
     });
 
     return items;
   });
+}
+
+async function extractCartData(page) {
+  console.log('  Parsing cart items...');
+  const cartItems = await extractCartDataRaw(page);
+  const unidentified = cartItems.filter(it => it.unidentified).length;
+  if (unidentified) console.log(`  ! ${unidentified} cart item(s) without offer_id (unidentified)`);
 
   // 추출된 데이터 로그 출력
   console.log('\n  ========== Cart Items ==========');
@@ -2123,8 +2219,9 @@ async function extractCartData(page) {
 }
 
 // 부드럽게 페이지 아래로 스크롤하는 함수 (lazy loading 대응)
-async function smoothScrollToBottom(page) {
+async function smoothScrollToBottom(page, onSnapshot) {
   console.log('    Starting blast-scroll to bottom...');
+  // onSnapshot: 항목 수가 변한 스냅샷(및 5회마다)에서 호출 — 스크롤 중 누적 추출용 (2026-10-25)
 
   // ── 헬퍼: 현재 페이지 상태 스냅샷 ──
   // scrollHeight + itemCount + shopCount + 로딩 인디케이터 여부를 한 번에 조회
@@ -2165,6 +2262,9 @@ async function smoothScrollToBottom(page) {
 
     const allSame = snap.h === prev.h && snap.items === prev.items && snap.shops === prev.shops;
     console.log(`    Blast #${blastCount}: h=${snap.h}, items=${snap.items}, shops=${snap.shops}, loading=${snap.loading}, stable=${stableCount}`);
+    if (onSnapshot && (snap.items !== prev.items || blastCount % 5 === 0)) {
+      try { await onSnapshot(); } catch (_) {}
+    }
 
     if (allSame && !snap.loading) {
       stableCount++;
@@ -2201,6 +2301,7 @@ async function smoothScrollToBottom(page) {
 
   const final = await snapshot(false);
   console.log(`    Final: items=${final.items}, shops=${final.shops}, scrollHeight=${final.h}`);
+  if (onSnapshot) { try { await onSnapshot(); } catch (_) {} }
 }
 
 // 중단 함수

@@ -1758,7 +1758,10 @@ function renderOrderList() {
 
     // 검수 결과 HTML 생성
     let reviewHtml = '-';
-    if (order.reviewStatus === 'ok') {
+    if (!order.reviewStatus && order.reviewResult?.unknown) {
+      // (2026-10-25) 장바구니를 전부 읽지 못해 없다고 단정할 수 없는 행 — 사용자가 직접 확인
+      reviewHtml = `<span style="color:#888;" title="${(order.reviewResult.message || '').replace(/"/g, '&quot;')}">미확인</span>`;
+    } else if (order.reviewStatus === 'ok') {
       reviewHtml = order.reviewResult?.cancelled
         ? '<span class="status-success">✅</span><div style="color:#888; font-size:0.85em;">취소 — 장바구니 없음</div>'
         : '<span class="status-success">✅</span>';
@@ -2293,9 +2296,12 @@ function skipOrders() {
 
 // 진행 상황 업데이트
 window.api.onProgress((progress) => {
-  const { index, status, errorReason, cancelReason, qtyLimited } = progress;
+  const { index, status, errorReason, cancelReason, qtyLimited, canonicalOfferId } = progress;
 
   if (index < orders.length) {
+    // (2026-10-25) 상태 없는 메시지: 주문 시 리다이렉트된 최종 offer_id 기록 (검수 매칭에서 함께 허용)
+    if (canonicalOfferId) orders[index].canonicalOfferId = canonicalOfferId;
+    if (!status) return;
     orders[index].status = status;
     if (errorReason) {
       orders[index].errorReason = errorReason;
@@ -3455,7 +3461,7 @@ function closeLinkEditModal() {
 // ════════════════════════════════════════════════════════════
 let reviewExtrasOkTimer = null;
 
-function renderReviewExtras(extras) {
+function renderReviewExtras(extras, coverage) {
   const box = document.getElementById('reviewExtrasBanner');
   if (!box) return;
   clearTimeout(reviewExtrasOkTimer);
@@ -3463,7 +3469,23 @@ function renderReviewExtras(extras) {
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
+  // (2026-10-25) 장바구니 읽기 완전성 — 전체 종류 수(sumOfKind)보다 적게 읽혔으면 테이블 위에 바로 표시
+  const unknownRows = orders.filter(o => !o.reviewStatus && o.reviewResult?.unknown).length;
+  let coverageHtml = '';
+  if (coverage && coverage.incomplete) {
+    coverageHtml = `
+    <div class="rx-head" style="color:#8a6d3b;">⚠️ 장바구니 <b>${coverage.expected}종</b> 중 <b>${coverage.got}종</b>만 확인했습니다 — 미확인 <b>${unknownRows}건</b>
+      <span class="rx-hint">화면에 다 그려지지 않은 항목이 있어 "카트에 없음"을 단정하지 않았습니다. 회색 '미확인' 행은 1688 장바구니에서 직접 확인하거나 [검수]를 다시 실행하세요.</span>
+    </div>`;
+  }
+
   if (!extras || extras.length === 0) {
+    if (coverageHtml) {
+      box.className = 'review-extras warn';
+      box.innerHTML = coverageHtml;
+      box.style.display = '';
+      return; // 미확인 배너는 자동으로 숨기지 않음
+    }
     box.className = 'review-extras ok';
     box.innerHTML = '✅ 잘못 담긴 주문이 없습니다 — 장바구니와 주문 목록이 일치합니다.';
     box.style.display = '';
@@ -3490,7 +3512,7 @@ function renderReviewExtras(extras) {
     </tr>`).join('');
 
   box.className = 'review-extras warn';
-  box.innerHTML = `
+  box.innerHTML = coverageHtml + `
     <div class="rx-head">⚠️ 잘못 담긴 주문 <b>${extras.length}건</b> — 초과 수량 합계 <b>${totalExcess}개</b>
       <span class="rx-hint">1688 장바구니에서 해당 상품을 삭제하거나 수량을 맞춘 뒤 [검수]를 다시 실행하세요. 이대로 진행하면 전체선택 결제 시 함께 결제됩니다.</span>
     </div>
@@ -3560,7 +3582,7 @@ async function startReview() {
     renderOrderList();
 
     // 잘못 담긴 주문(취소했는데 남음 / 수량 초과 / 목록에 없음) 배너 갱신
-    renderReviewExtras(reviewResult?.comparisonResults?.extraItems || []);
+    renderReviewExtras(reviewResult?.comparisonResults?.extraItems || [], reviewResult?.coverage);
 
     // 버튼 상태 업데이트
     stepStatus.review = true;
