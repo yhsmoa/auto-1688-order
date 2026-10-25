@@ -2076,6 +2076,8 @@ async function startOrders() {
   try {
     // 주문 처리 시작
     await window.api.processOrders(ordersToProcess);
+    // (2026-10-25) 재고/단위 제약으로 제외된 행이 세트의 일부면, 짝 행도 함께 실패 처리할지 한 번에 확인
+    promptSetLinkForQtyLimited();
   } catch (error) {
     if (error.message === 'STOPPED_BY_USER') {
       alert('주문 진행이 중단되었습니다.');
@@ -2291,7 +2293,7 @@ function skipOrders() {
 
 // 진행 상황 업데이트
 window.api.onProgress((progress) => {
-  const { index, status, errorReason } = progress;
+  const { index, status, errorReason, cancelReason, qtyLimited } = progress;
 
   if (index < orders.length) {
     orders[index].status = status;
@@ -2304,6 +2306,12 @@ window.api.onProgress((progress) => {
           applyCancelReason(orders[index], '링크 없음', AUTO_REASON_TYPE);
         }
       }
+      // (2026-10-25) 수량 확정에서 제외된 행: 자동 취소 사유 부여 → 검수 합계에서 빠지고 실패V2 사유로 전달
+      //  세트 연동 확인은 주문 진행이 끝난 뒤 한 번에 묻는다 (promptSetLinkForQtyLimited)
+      if (cancelReason && !hasCancelReason(orders[index])) {
+        applyCancelReason(orders[index], cancelReason, AUTO_REASON_TYPE);
+      }
+      if (qtyLimited) orders[index]._qtyLimited = true;
     }
   }
 
@@ -2723,6 +2731,33 @@ function linkSetFailure(index) {
     applyCancelReason(orders[i], `세트 연동 취소 (${srcNo})`, LINKED_REASON_TYPE);
     orders[i]._linkedFrom = srcNo;
   });
+}
+
+// (2026-10-25) 주문 진행 종료 후 1회: 수량 확정에서 제외(_qtyLimited)된 세트 행들의 짝 중
+//  아직 실패가 아닌 행을 모아 한 번에 확인하고 세트 연동 취소를 적용한다.
+//  (짝 상품은 이미 장바구니에 담겼을 수 있으므로, 검수의 '취소했는데 장바구니에 남음' 배너가 후속 안내)
+function promptSetLinkForQtyLimited() {
+  const sources = [];
+  orders.forEach((o, i) => { if (o._qtyLimited && isOrderFailed(o) && getSetKey(o)) sources.push(i); });
+  if (sources.length === 0) return;
+  const plan = new Map(); // targetIdx → srcNo
+  sources.forEach(i => {
+    const srcNo = itemNoOf(orders[i]);
+    findSetSiblingIndexes(i).forEach(t => { if (!isOrderFailed(orders[t]) && !plan.has(t)) plan.set(t, srcNo); });
+  });
+  if (plan.size === 0) return;
+  const list = [...plan.entries()].map(([t, src]) => `  · ${itemNoOf(orders[t])}  (짝: ${src})`).join('\n');
+  const ok = confirm(
+    `재고/단위 제한으로 제외된 세트 상품이 있습니다.\n` +
+    `같은 세트의 나머지 ${plan.size}건도 함께 실패 처리할까요?\n\n${list}\n\n` +
+    `[취소]를 누르면 나머지는 그대로 주문됩니다 (세트가 나뉘어 주문됨).`
+  );
+  if (!ok) return;
+  plan.forEach((srcNo, t) => {
+    applyCancelReason(orders[t], `세트 연동 취소 (${srcNo})`, LINKED_REASON_TYPE);
+    orders[t]._linkedFrom = srcNo;
+  });
+  renderOrderList();
 }
 
 // 규칙 2: index 행이 다시 성공이 된 직후 — 이 행 때문에 연동 취소된 세트 행을 확인 후 복원

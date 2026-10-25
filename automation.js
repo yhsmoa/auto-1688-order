@@ -661,22 +661,170 @@ function groupOrdersByOfferId(orders) {
       item => item.color === order.color && item.size === order.size
     );
 
+    const rowQty = parseInt(order.quantity, 10) || 0;
     if (existingItem) {
-      // 동일 옵션이면 수량 합산
-      existingItem.quantity += order.quantity;
+      // 동일 옵션이면 수량 합산 (입력은 합계로 1회) — 행 단위 수량은 rows 에 보존 (수량 조합용)
+      existingItem.quantity += rowQty;
       existingItem.orderIndices.push(orderIndex);
+      existingItem.rows.push({ orderIndex, quantity: rowQty });
     } else {
       // 새로운 옵션 추가
       groups[offerId].items.push({
         color: order.color,
         size: order.size,
-        quantity: order.quantity,
-        orderIndices: [orderIndex]  // 원본 orders 배열의 인덱스들
+        quantity: rowQty,
+        orderIndices: [orderIndex],                  // 원본 orders 배열의 인덱스들 (표 순서)
+        rows: [{ orderIndex, quantity: rowQty }]     // 행 단위 수량 (표 순서) — 재고/단위 제약 시 조합 계산에 사용
       });
     }
   });
 
   return Object.values(groups);
+}
+
+// ════════════════════════════════════════════════════════════
+// 수량 확정 (2026-10-25) — 재고 제한 · 최소주문량 · 주문 단위(5·10 배수) 대응
+//
+//   1688 은 입력 수량을 조용히 바꾼다 (재고로 내림 / 최소주문량·배수로 올림). 지금까지는 바뀐 값을
+//   읽지 않아 "담기 성공"이 수량 보장처럼 보였다. 원칙:
+//     · 입력 후 반드시 다시 읽어 확인한다. 읽은 값이 입력값과 같을 때만 확정.
+//     · 요청보다 많이 담지 않는다. 같은 옵션의 행(주문건)들을 합쳐 1688 이 그대로 받아주는 수량이
+//       되는 조합만 성공. 예) 단위 5: 5,3,3 → {5} / 5,3,2 → 10 전부 / 3,4,2 → {3,2} / 최소 2: 1,1 → 둘 다
+//     · 조합 선택: ① 합계 최대 ② 동점이면 표 순서 앞 행을 포함한 조합.
+//     · 정상 옵션(읽은 값 == 입력값)은 읽기 1회만 추가되어 속도 영향이 거의 없다.
+// ════════════════════════════════════════════════════════════
+
+// 입력칸 값을 정수로 읽는다 (빈 값/비정상 → 0)
+async function readQtyInput(inputField) {
+  const v = await inputField.inputValue().catch(() => '');
+  const n = parseInt(String(v).replace(/[^\d]/g, ''), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// 수량을 입력하고 1688 이 반영한 값을 읽어 돌려준다 (기존 입력 방식 그대로: 비우기 → 타이핑 → Tab)
+async function setQtyAndRead(page, inputField, qty) {
+  await safeClick(inputField);
+  await inputField.fill('');
+  await inputField.type(String(qty), { delay: 50 });
+  await page.keyboard.press('Tab');
+  await page.waitForTimeout(300);
+  return await readQtyInput(inputField);
+}
+
+// 1688 이 실제로 적용하는 제약을 입력칸에서 직접 알아낸다 (3회 입력)
+//   min  : 1 입력 → 읽은 값 (최소주문량; 0 이면 1 로 간주)
+//   unit : min+1 입력 → 읽은 값 − min (올림 폭 = 단위; 올림이 없으면 1)
+//   max  : max(min, N 이상 첫 배수) 입력 → 그대로 반영되면 상한 없음(Infinity), 아니면 읽은 값
+async function probeQtyConstraints(page, inputField, requestedTotal) {
+  const r1 = await setQtyAndRead(page, inputField, 1);
+  const min = r1 > 0 ? r1 : 1;
+  const r2 = await setQtyAndRead(page, inputField, min + 1);
+  const unit = r2 > min ? (r2 - min) : 1;
+  const firstMultiple = Math.ceil(requestedTotal / unit) * unit;
+  const probe = Math.max(min, firstMultiple);
+  const r3 = await setQtyAndRead(page, inputField, probe);
+  const max = (r3 === probe) ? Infinity : (r3 > 0 ? r3 : 0);
+  return { min, unit, max, reads: { r1, r2, r3, probe } };
+}
+
+// 행 조합 후보 (순수 함수, node 테스트 가능)
+//   rows: [{orderIndex, quantity}] 표 순서 / c: {min, unit, max}
+//   반환: 유효 조합 목록을 ① 합계 내림차순 ② 동점이면 표 순서 앞 행 포함(인덱스 사전순) 으로 정렬
+//   유효: sum > 0, sum >= min, sum % unit == 0, sum <= max
+//   행 16개까지는 전수 열거(65,536), 그 이상은 뒤에서부터 행을 빼는 접두 조합으로 축소
+function enumerateQtyCombos(rows, c) {
+  const n = rows.length;
+  const min = c.min || 1, unit = c.unit || 1, max = (c.max === undefined || c.max === null) ? Infinity : c.max;
+  const valid = (sum) => sum > 0 && sum >= min && sum % unit === 0 && sum <= max;
+  const combos = [];
+  if (n <= 16) {
+    for (let mask = 1; mask < (1 << n); mask++) {
+      let sum = 0; const idx = [];
+      for (let i = 0; i < n; i++) if (mask & (1 << i)) { sum += rows[i].quantity; idx.push(i); }
+      if (valid(sum)) combos.push({ sum, idx });
+    }
+  } else {
+    for (let k = n; k >= 1; k--) {
+      let sum = 0; const idx = [];
+      for (let i = 0; i < k; i++) { sum += rows[i].quantity; idx.push(i); }
+      if (valid(sum)) combos.push({ sum, idx });
+    }
+  }
+  combos.sort((a, b) => {
+    if (b.sum !== a.sum) return b.sum - a.sum;
+    const L = Math.min(a.idx.length, b.idx.length);
+    for (let i = 0; i < L; i++) if (a.idx[i] !== b.idx[i]) return a.idx[i] - b.idx[i];
+    return b.idx.length - a.idx.length;
+  });
+  return combos;
+}
+
+function describeQtyConstraints(c, requestedTotal) {
+  const parts = [];
+  if (c.min > 1) parts.push(`최소주문 ${c.min}개`);
+  if (c.unit > 1) parts.push(`단위 ${c.unit}개`);
+  if (Number.isFinite(c.max)) parts.push(`재고 ${c.max}개`);
+  if (parts.length === 0) parts.push(`요청 ${requestedTotal}개 입력 불가`);
+  return parts.join('·');
+}
+
+// 옵션 1개(같은 색상·사이즈 행 묶음)의 수량을 입력하고 확정한다.
+//   반환: { accepted: [orderIndex...], rejected: [{orderIndex, reason}], quantity: 확정 입력값, note }
+//   accepted 가 비면 호출측에서 옵션 전체 실패 처리. 입력칸은 확정값(또는 0)으로 남겨 둔다.
+async function resolveQuantityForItem(page, inputField, item) {
+  const rows = (item.rows && item.rows.length) ? item.rows : item.orderIndices.map(i => ({ orderIndex: i, quantity: item.quantity }));
+  const requested = rows.reduce((s, r) => s + r.quantity, 0);
+
+  // ── 1) 합계 입력 → 읽기 (정상이면 여기서 끝) ──
+  const first = await setQtyAndRead(page, inputField, requested);
+  if (first === requested) {
+    return { accepted: rows.map(r => r.orderIndex), rejected: [], quantity: requested, note: '' };
+  }
+  console.log(`  ! Quantity adjusted by 1688: typed ${requested}, got ${first}`);
+
+  // ── 2) 품절 ──
+  if (first === 0) {
+    return { accepted: [], rejected: rows.map(r => ({ orderIndex: r.orderIndex, reason: '품절' })), quantity: 0, note: '품절' };
+  }
+
+  // ── 3) 제약 파악 → 조합 후보 ──
+  const c = await probeQtyConstraints(page, inputField, requested);
+  console.log(`  Constraints: min=${c.min}, unit=${c.unit}, max=${c.max} (reads ${JSON.stringify(c.reads)})`);
+  const combos = enumerateQtyCombos(rows, c);
+  const cText = describeQtyConstraints(c, requested);
+
+  // ── 4) 후보를 실제 입력해 읽은 값이 같을 때만 확정 (최대 6회) ──
+  const maxTries = 6;
+  for (let t = 0; t < Math.min(combos.length, maxTries); t++) {
+    checkShouldStop();
+    const combo = combos[t];
+    const got = await setQtyAndRead(page, inputField, combo.sum);
+    if (got === combo.sum) {
+      const acceptedSet = new Set(combo.idx);
+      const accepted = rows.filter((_, i) => acceptedSet.has(i)).map(r => r.orderIndex);
+      const rejected = rows.filter((_, i) => !acceptedSet.has(i)).map(r => ({
+        orderIndex: r.orderIndex,
+        reason: `${cText} — 요청 ${r.quantity}개 제외 (가능 ${combo.sum}/${requested})`
+      }));
+      console.log(`  + Quantity combo confirmed: ${combo.sum} (${accepted.length}/${rows.length} rows, try ${t + 1})`);
+      return { accepted, rejected, quantity: combo.sum, note: rejected.length ? cText : '' };
+    }
+    console.log(`  - Combo ${combo.sum} rejected by 1688 (got ${got}), next...`);
+  }
+
+  // ── 5) 조합 없음 → 입력칸을 0 으로 되돌리고 전부 실패 ──
+  const cleared = await setQtyAndRead(page, inputField, 0);
+  if (cleared !== 0) {
+    await inputField.fill('').catch(() => {});
+    await page.keyboard.press('Tab').catch(() => {});
+    await page.waitForTimeout(300);
+  }
+  const left = await readQtyInput(inputField);
+  if (left !== 0) {
+    // 되돌리기 실패: 이 옵션의 수량이 장바구니에 담길 수 있으므로 호출측이 상품 전체 담기를 중단해야 한다
+    return { accepted: [], rejected: rows.map(r => ({ orderIndex: r.orderIndex, reason: `${cText} — 조합 불가 (요청 ${r.quantity}) · 수량 초기화 실패` })), quantity: left, note: cText, resetFailed: true };
+  }
+  return { accepted: [], rejected: rows.map(r => ({ orderIndex: r.orderIndex, reason: `${cText} — 조합 불가 (요청 ${r.quantity})` })), quantity: 0, note: cText };
 }
 
 // 그룹 주문 처리 (동일 offer_id의 여러 옵션을 한 번에)
@@ -884,19 +1032,32 @@ async function processGroupOrder(page, group, onProgress) {
         throw new Error('Could not select option');
       }
 
-      // 수량 입력
-      console.log(`  Entering quantity: ${item.quantity}`);
+      // 수량 입력 + 확정 (2026-10-25: 입력 후 읽어서 확인, 재고/단위/최소주문 제약 시 행 조합)
+      console.log(`  Entering quantity: ${item.quantity} (${(item.rows || []).length || item.orderIndices.length} row(s))`);
       const inputField = targetRow.locator('.ant-input-number-input');
       await inputField.scrollIntoViewIfNeeded();
-      await safeClick(inputField);
-      await inputField.fill('');
-      await inputField.type(item.quantity.toString(), { delay: 50 });
-      await page.keyboard.press('Tab');
-      await page.waitForTimeout(300);
+      const q = await resolveQuantityForItem(page, inputField, item);
 
-      // 이 아이템 성공 (아직 장바구니 추가 전이지만 옵션 선택 완료)
-      item.optionSelected = true;
-      console.log(`  + Option & quantity set for this item`);
+      // 제외된 행: 즉시 실패 + 자동 취소 사유 (검수 합계에서 빠지고, 실패V2 사유로 전달)
+      q.rejected.forEach(rj => {
+        onProgress({ index: rj.orderIndex, status: 'error', errorReason: rj.reason, cancelReason: rj.reason, qtyLimited: true });
+      });
+
+      if (q.resetFailed) {
+        // 수량 초기화 실패: 이 상품은 加采购车 를 누르지 않는다 (잘못된 수량이 담기는 것 방지)
+        group.abortCart = `수량 초기화 실패 (${item.color}/${item.size})`;
+      }
+
+      if (q.accepted.length === 0) {
+        item.optionSelected = false;
+        item.error = q.note || 'quantity rejected';
+        console.log(`  X No orderable quantity for this option (${q.note})`);
+      } else {
+        item.optionSelected = true;
+        item.acceptedIndices = q.accepted;
+        item.quantity = q.quantity;
+        console.log(`  + Option & quantity set: ${q.quantity} (${q.accepted.length} row(s)${q.rejected.length ? `, ${q.rejected.length} excluded` : ''})`);
+      }
 
     } catch (error) {
       // 봇 챌린지 감지 시: 이 아이템 + 같은 그룹의 미처리 아이템을 모두 표시하고 상위로 전파
@@ -927,9 +1088,22 @@ async function processGroupOrder(page, group, onProgress) {
 
   // 4. 성공한 옵션이 하나라도 있으면 장바구니 추가
   const successItems = items.filter(item => item.optionSelected);
+  // 수량 확정 후 성공 처리 대상 행 (제외 행은 이미 error 로 보고됨)
+  const idxOf = (item) => item.acceptedIndices || item.orderIndices;
 
   if (successItems.length === 0) {
     console.log(`\nNo options selected successfully, skipping cart`);
+    return;
+  }
+
+  // 수량 초기화 실패 옵션이 있으면 이 상품은 담지 않는다 — 잘못된 수량이 장바구니에 들어가는 것보다 안전
+  if (group.abortCart) {
+    console.log(`X Skipping cart for this product: ${group.abortCart}`);
+    successItems.forEach(item => {
+      idxOf(item).forEach(idx => {
+        onProgress({ index: idx, status: 'error', errorReason: `${group.abortCart} — 수동 확인 필요` });
+      });
+    });
     return;
   }
 
@@ -940,7 +1114,7 @@ async function processGroupOrder(page, group, onProgress) {
   if (shippingCheck.warning) {
     console.log(`X High shipping fee detected, marking as error`);
     successItems.forEach(item => {
-      item.orderIndices.forEach(idx => {
+      idxOf(item).forEach(idx => {
         onProgress({ index: idx, status: 'error', errorReason: shippingCheck.message });
       });
     });
@@ -961,7 +1135,7 @@ async function processGroupOrder(page, group, onProgress) {
   if (await addCartBtn.count() === 0) {
     console.log(`X Cart button not found`);
     successItems.forEach(item => {
-      item.orderIndices.forEach(idx => {
+      idxOf(item).forEach(idx => {
         onProgress({ index: idx, status: 'error', errorReason: 'Cart button not found' });
       });
     });
@@ -975,7 +1149,7 @@ async function processGroupOrder(page, group, onProgress) {
     console.log(`SUCCESS! Added to cart`);
 
     successItems.forEach(item => {
-      item.orderIndices.forEach(idx => {
+      idxOf(item).forEach(idx => {
         onProgress({ index: idx, status: 'success', shippingInfo: shippingCheck.infoMessage });
       });
     });
@@ -986,7 +1160,7 @@ async function processGroupOrder(page, group, onProgress) {
   } else {
     console.log(`X Cart add failed: ${cartResult.error}`);
     successItems.forEach(item => {
-      item.orderIndices.forEach(idx => {
+      idxOf(item).forEach(idx => {
         onProgress({ index: idx, status: 'error', errorReason: cartResult.error || 'Add to cart failed' });
       });
     });
@@ -3399,4 +3573,4 @@ async function askInquiry(group) {
   }
 }
 
-module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry };
+module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints };
