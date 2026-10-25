@@ -1073,6 +1073,22 @@
     .set-badge-click { cursor: pointer; }
     .set-badge-click:hover { background: #c94f00; }
 
+    /* (2026-10-26) 차감 확인 모달 */
+    .deduct-modal-content { width: 560px; max-width: 92vw; font-size: 13px; color: #333; }
+    .deduct-modal-content .dm-head { padding-bottom: 8px; border-bottom: 1px solid #eee; margin-bottom: 8px; font-size: 14px; }
+    .deduct-modal-content .dm-section { padding: 6px 0; border-bottom: 1px solid #f0f0f0; }
+    .deduct-modal-content .dm-section:last-child { border-bottom: none; }
+    .deduct-modal-content .dm-row { padding: 4px 0; line-height: 1.5; }
+    .deduct-modal-content .dm-ok { color: #1e7e34; }
+    .deduct-modal-content .dm-warn { color: #a05a00; }
+    .deduct-modal-content .dm-muted { color: #666; }
+    .deduct-modal-content .dm-sub { font-size: 12px; color: #777; margin-top: 2px; }
+    .deduct-modal-content .dm-amount { background: #f8f9fb; border-radius: 6px; padding: 8px 10px; margin-top: 8px; }
+    .deduct-modal-content .dm-total { font-size: 15px; }
+    .deduct-modal-content .dm-total b { color: #c0392b; font-size: 17px; }
+    .deduct-modal-content .dm-link { background: none; border: 1px solid #4a90d9; color: #4a90d9; border-radius: 4px; padding: 1px 8px; margin-left: 6px; cursor: pointer; font-size: 12px; }
+    .deduct-modal-content .dm-link:hover { background: #eaf2fc; }
+
     /* 주황색 행 네비게이션 패널 (우측 하단 고정) */
     .orange-nav-panel {
       position: fixed;
@@ -1795,6 +1811,18 @@
       <div class="save-confirm-modal-buttons">
         <button class="btn-cancel" onclick="closeSaveConfirmModal()">취소</button>
         <button class="btn-exit-without-save" onclick="exitWithoutSave()">저장하지 않고 종료</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 차감 확인 모달 (2026-10-26): 주문건 ↔ 엑셀 품번 대조 + 금액 + [취소]/[차감] -->
+  <div class="modal-overlay" id="deductConfirmModal" style="display:none;">
+    <div class="modal-content deduct-modal-content">
+      <div class="modal-title">차감 확인</div>
+      <div id="deductConfirmBody"></div>
+      <div class="modal-buttons" style="flex-direction:row; gap:8px; margin-top:14px; justify-content:flex-end;">
+        <button class="btn-export btn-export-gray" onclick="closeDeductConfirmModal(false)">취소</button>
+        <button class="btn-export btn-export-blue" onclick="closeDeductConfirmModal(true)">차감</button>
       </div>
     </div>
   </div>

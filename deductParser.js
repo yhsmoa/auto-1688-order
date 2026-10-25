@@ -10,7 +10,15 @@
 //       Y(24) Offer ID               (상품 행 단위)
 //       AD(29) 买家留言 메모          (병합셀 — 1688 주문 단위, 여러 줄 가능: "ORxx | 날짜 | 품번:수량")
 //
-//   · 2026-10-25 분류 규칙 (여러 주문건이 섞인 엑셀 대응):
+//   · 2026-10-26 품번 단위 대조 (opts.sessionItems 가 주어지면 이 규칙이 우선):
+//       메모 각 줄 "코드 | BO-261026 | 0255-A01:15, 0253-A01:10" 에서 품번(BO-261026-0255-A01)과 수량을 복원해
+//       현재 주문의 성공 품번 집합과 대조한다.
+//         1688 주문의 메모 품번이 전부 현재 주문 것     → 포함 (메모의 주문코드가 달라도 포함 — 세션 코드가 바뀐 경우 대비)
+//         일부만 현재 주문 것 (다른 주문과 섞임)        → 중단 (실결제·운임을 나눌 수 없음)
+//         하나도 현재 주문 것이 아님                     → 제외 (엑셀에만 있는 건으로 집계)
+//         메모에 품번이 없음                              → 아래 코드 규칙으로 폴백
+//       결과 match: 성공 품번 수 / 엑셀에서 일치한 수 / 엑셀에 없는 성공 품번 목록 / 엑셀에만 있는 품번 수
+//   · 2026-10-25 분류 규칙 (sessionItems 가 없을 때, 또는 메모에 품번이 없을 때):
 //       엑셀을 1688 주문(A열 병합 그룹) 단위로 나누고, 그룹의 AD 전체 텍스트에서 주문코드를 모두 추출한다.
 //         코드 집합 == {대상}         → 포함 (합산)
 //         대상 없음 (다른 코드만)      → 제외, 코드별 건수 집계
@@ -38,6 +46,9 @@
   // ── 주문코드 형식: OR{user_code}{YYMMDD}-{시간알파벳}{분2자리}[_난수]  (예: ORBZ260902-O23) ──
   const ORDER_CODE_RE   = /^OR([A-Z]+)(\d{6})-/;                 // 선두 검사 + user_code 추출
   const CODE_SCAN_RE    = /OR[A-Z]{2,}\d{6}-[A-Z]\d{2}(?:_\d+)?/g; // 메모 텍스트 전체에서 코드 전부 추출
+  // 메모 한 줄: "주문코드 | 품번앞부분(BO-261026) | 뒷부분:수량, 뒷부분:수량 …"  (inputRefCodesV2 가 만드는 형식)
+  const MEMO_LINE_RE    = /^\s*(OR[A-Z]{2,}\d{6}-[A-Z]\d{2}(?:_\d+)?)\s*\|\s*([A-Z]{2,}-\d{6})\s*\|\s*(.+?)\s*$/;
+  const MEMO_ITEM_RE    = /^(\d{4}-[A-Z]\d{2,})(?::(\d+))?$/;    // "0255-A01:15" → 뒷부분, 수량
 
   const round2 = n => Math.round(n * 100) / 100;
   const toNum  = v => parseFloat(String(v).replace(/,/g, '')) || 0;
@@ -88,6 +99,27 @@
     return [...new Set(found)];
   }
 
+  // ── 메모 텍스트에서 품번·수량 전부 추출 ──
+  //   반환: [{ itemNo: 'BO-261026-0255-A01', qty: 15, code: 'ORBO261026-B13' }, …]  (중복 품번은 첫 것만)
+  function extractMemoItems(text) {
+    const out = [];
+    const seen = new Set();
+    String(text || '').split(/\r?\n/).forEach(line => {
+      const m = MEMO_LINE_RE.exec(line);
+      if (!m) return;
+      const code = m[1], datePart = m[2];
+      m[3].split(',').forEach(tok => {
+        const im = MEMO_ITEM_RE.exec(tok.trim());
+        if (!im) return;
+        const itemNo = `${datePart}-${im[1]}`;
+        if (seen.has(itemNo)) return;
+        seen.add(itemNo);
+        out.push({ itemNo, qty: im[2] !== undefined ? parseInt(im[2], 10) : null, code });
+      });
+    });
+    return out;
+  }
+
   // ── 행을 1688 주문 그룹으로 묶는다 (A열 병합값 기준, 등장 순) ──
   //   A 가 비어 있고 병합도 아닌 행은 직전 그룹에 붙인다 (내보내기 형식 방어).
   function groupBy1688Order(jsonData, merges) {
@@ -112,7 +144,7 @@
       if (offer) g.offerIds.add(offer);
       last = g;
     }
-    groups.forEach(g => { g.codes = extractCodes(g.memo); });
+    groups.forEach(g => { g.codes = extractCodes(g.memo); g.items = extractMemoItems(g.memo); });
     return groups;
   }
 
@@ -136,7 +168,11 @@
    * @throws {DeductParseError} 사용자에게 그대로 보여줄 메시지
    */
   function parseDeductWorksheet(worksheet, XLSXLib, opts) {
-    const { currentOrderCodes, selectedUserCode, session1688OrderIds, sessionOfferIds } = opts || {};
+    const { currentOrderCodes, selectedUserCode, session1688OrderIds, sessionOfferIds, sessionItems } = opts || {};
+    // 품번 단위 대조 모드: 현재 주문의 성공 품번 → 수량 맵
+    const sessionMap = new Map();
+    (sessionItems || []).forEach(it => { if (it && it.itemNo) sessionMap.set(String(it.itemNo).trim(), it); });
+    const itemMode = sessionMap.size > 0;
 
     const jsonData = XLSXLib.utils.sheet_to_json(worksheet, { header: 1, defval: '', blankrows: false });
     if (jsonData.length < 2) throw new DeductParseError('엑셀 파일에 데이터가 없습니다.');
@@ -182,26 +218,62 @@
     const included = [];
     const excluded = { byCode: {}, noMemo: 0, orders: 0, rows: 0 };
     const mixed = [];
+    const matchedItemNos = new Set();     // 엑셀(포함 그룹)에서 확인된 현재 주문 품번
+    let extraInExcel = 0;                 // 엑셀 메모에 있지만 현재 주문이 아닌 품번 수
+    const qtyMismatch = [];               // 메모 수량 ≠ 주문 수량
+    const groupsDetail = [];
+
     for (const g of groups) {
       const hasTarget = g.codes.includes(orderCode);
       const others = g.codes.filter(c => c !== orderCode);
-      if (hasTarget && others.length === 0) { included.push(g); continue; }
-      if (hasTarget && others.length > 0) { mixed.push(g); continue; }
+      let decision, reason;
+
+      if (itemMode && g.items.length > 0) {
+        // ── 품번 단위 판정 ──
+        const mine  = g.items.filter(it => sessionMap.has(it.itemNo));
+        const notMine = g.items.filter(it => !sessionMap.has(it.itemNo));
+        if (mine.length > 0 && notMine.length === 0) {
+          decision = 'include'; reason = hasTarget ? 'items' : 'items(code-mismatch)';
+          mine.forEach(it => {
+            matchedItemNos.add(it.itemNo);
+            const s = sessionMap.get(it.itemNo);
+            if (it.qty !== null && s && s.qty !== undefined && s.qty !== null && Number(s.qty) !== it.qty) {
+              qtyMismatch.push({ itemNo: it.itemNo, memoQty: it.qty, orderQty: Number(s.qty) });
+            }
+          });
+        } else if (mine.length > 0) {
+          decision = 'mixed'; reason = `현재 주문 품번 ${mine.length}개 + 다른 품번 ${notMine.length}개`;
+          g.mixedDetail = { mine: mine.map(i => i.itemNo), notMine: notMine.map(i => i.itemNo) };
+        } else {
+          decision = 'exclude'; reason = 'other-items';
+          extraInExcel += notMine.length;
+        }
+      } else {
+        // ── 코드 단위 판정 (품번 정보 없음 / 세션 품번 미제공) ──
+        if (hasTarget && others.length === 0) { decision = 'include'; reason = 'code'; }
+        else if (hasTarget) { decision = 'mixed'; reason = `주문코드 혼합: ${g.codes.join(', ')}`; }
+        else { decision = 'exclude'; reason = g.codes.length === 0 ? 'no-memo' : 'other-code'; if (itemMode) extraInExcel += g.items.length; }
+      }
+
+      groupsDetail.push({ orderNo1688: g.orderNo1688, rows: g.rowIdx.length, codes: g.codes, items: g.items.length, decision, reason });
+      if (decision === 'include') { included.push(g); continue; }
+      if (decision === 'mixed') { mixed.push(g); continue; }
       excluded.orders++; excluded.rows += g.rowIdx.length;
       if (g.codes.length === 0) excluded.noMemo++;
-      else others.forEach(c => { excluded.byCode[c] = (excluded.byCode[c] || 0) + 1; });
+      else (others.length ? others : g.codes).forEach(c => { excluded.byCode[c] = (excluded.byCode[c] || 0) + 1; });
     }
     if (mixed.length > 0) {
-      const list = mixed.map(g => `  · ${g.orderNo1688}: ${g.codes.join(', ')}`).join('\n');
+      const list = mixed.map(g => `  · 1688 ${g.orderNo1688}: ${g.mixedDetail ? `현재 주문 ${g.mixedDetail.mine.join(', ')} + 다른 주문 ${g.mixedDetail.notMine.join(', ')}` : g.codes.join(', ')}`).join('\n');
       throw new DeductParseError(
-        `한 1688 주문에 현재 주문코드와 다른 주문코드가 함께 들어 있어 차감을 중단합니다.\n` +
-        `(실결제·운임이 1688 주문 단위라 코드별로 정확히 나눌 수 없습니다)\n\n${list}\n\n` +
+        `한 1688 주문에 현재 주문과 다른 주문의 상품이 함께 들어 있어 차감을 중단합니다.\n` +
+        `(실결제·운임이 1688 주문 단위라 주문별로 정확히 나눌 수 없습니다)\n\n${list}\n\n` +
         `해당 1688 주문은 별도로 정리한 뒤 다시 시도하세요.`);
     }
     if (included.length === 0) {
       throw new DeductParseError(
-        `현재 주문코드(${orderCode})에 해당하는 1688 주문이 엑셀에 없습니다.\n` +
-        `제외: 다른 주문코드 ${Object.values(excluded.byCode).reduce((a, b) => a + b, 0)}건, 메모 없음 ${excluded.noMemo}건`);
+        `현재 주문(${orderCode})에 해당하는 1688 주문이 엑셀에 없습니다.\n` +
+        `제외: 다른 주문 ${excluded.orders}건 (메모 없음 ${excluded.noMemo}건)` +
+        (itemMode ? `\n현재 주문의 성공 품번 ${sessionMap.size}개 중 엑셀에서 확인된 것 0개` : ''));
     }
 
     // ── 합산 (포함 그룹에 한정; G/I 는 병합 첫 행만, U 는 전 행, A 는 고유값) ──
@@ -248,6 +320,23 @@
       if (crossCheck.unknownOffers.length) warnings.push(`포함된 1688 주문의 상품(Offer ID) 중 주문목록에 없는 것 ${crossCheck.unknownOffers.length}개`);
     }
 
+    // ── 품번 단위 대조 결과 ──
+    let match = null;
+    if (itemMode) {
+      const missing = [];
+      sessionMap.forEach((it, itemNo) => { if (!matchedItemNos.has(itemNo)) missing.push({ ...it, itemNo }); });
+      match = {
+        sessionTotal: sessionMap.size,          // 현재 주문의 성공 품번 수
+        matched: matchedItemNos.size,           // 엑셀(포함 1688 주문)에서 확인된 품번 수
+        missing,                                // 성공인데 엑셀에 없는 품번 (차감에서 빠짐)
+        extraInExcel,                           // 엑셀에만 있는(다른 주문) 품번 수
+        extraOrders: excluded.orders,           // 엑셀에만 있는 1688 주문 수
+        qtyMismatch,                            // 메모 수량 ≠ 주문 수량
+      };
+      if (missing.length) warnings.push(`주문 성공 품번 중 엑셀에 없는 것 ${missing.length}건 — 이번 차감에 포함되지 않음`);
+      if (qtyMismatch.length) warnings.push(`메모 수량과 주문 수량이 다른 품번 ${qtyMismatch.length}건`);
+    }
+
     return {
       orderCode,
       orderNos1688: orderNos,
@@ -258,9 +347,12 @@
       excluded,
       crossCheck,
       warnings,
+      match,
+      mode: itemMode ? 'items' : 'code',
+      groupsDetail,
     };
   }
 
-  return { parseDeductWorksheet, DeductParseError, SERVICE_FEE_RATE, COL, ORDER_CODE_RE, CODE_SCAN_RE,
-           _internal: { getMergedValue, isFirstRowOfMerge, round2, toNum, toInt, extractCodes, groupBy1688Order } };
+  return { parseDeductWorksheet, DeductParseError, SERVICE_FEE_RATE, COL, ORDER_CODE_RE, CODE_SCAN_RE, MEMO_LINE_RE,
+           _internal: { getMergedValue, isFirstRowOfMerge, round2, toNum, toInt, extractCodes, extractMemoItems, groupBy1688Order } };
 });

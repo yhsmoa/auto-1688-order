@@ -5196,6 +5196,83 @@ function deductStockV2() {
 //   구 원장(invoiceManager_transactions) 에는 기록하지 않는다.
 //   금액 단위는 위안(¥) — 이전 코드의 "원" 표기는 오기였음.
 // ════════════════════════════════════════════════════════════
+// V2 저장·참조코드·실패 내보내기와 같은 '성공' 판정 (finalComplete 우선, 없으면 결과·검수 조합)
+function isDeductSuccessOrder(order) {
+  if (!order || order.isInvalid) return false;
+  if (order.finalComplete !== undefined) return order.finalComplete === true;
+  const hasResult = order.status && order.status !== 'pending';
+  const hasReview = order.reviewStatus && order.reviewStatus !== '';
+  const resultTrue = order.status === 'success';
+  const reviewTrue = order.reviewStatus === 'ok';
+  if (hasResult && hasReview) return resultTrue && reviewTrue;
+  if (!hasResult && hasReview) return reviewTrue;
+  return false;
+}
+
+// 차감 확인 모달 — 주문건 ↔ 엑셀 품번 대조 결과를 보여주고 [취소]/[차감] 선택을 Promise 로 돌려준다.
+//   ctx: { calc, venderName, userCode, balanceNow }
+let _deductModalResolve = null;
+let _deductModalCtx = null;
+function showDeductConfirmModal(ctx) {
+  const modal = document.getElementById('deductConfirmModal');
+  const body  = document.getElementById('deductConfirmBody');
+  if (!modal || !body) return Promise.resolve(confirm(`차감액 ¥${ctx.calc.amount.toLocaleString()} — 진행할까요?`));
+  _deductModalCtx = ctx;
+  const { calc, venderName, userCode, balanceNow } = ctx;
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  const yen = (n) => '¥' + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const m = calc.match;
+
+  let matchHtml = '';
+  if (m) {
+    const allMatched = m.missing.length === 0;
+    matchHtml += `<div class="dm-row ${allMatched ? 'dm-ok' : 'dm-warn'}">${allMatched ? '✅' : '⚠️'} 주문 성공 <b>${m.sessionTotal}</b>건 / 엑셀 일치 <b>${m.matched}</b>건</div>`;
+    matchHtml += `<div class="dm-row ${m.missing.length ? 'dm-warn' : 'dm-muted'}">${m.missing.length ? '❌' : '✅'} 주문 성공인데 엑셀에 없음 <b>${m.missing.length}</b>건`
+      + (m.missing.length ? ` <button type="button" class="dm-link" onclick="downloadDeductMissingExcel()">엑셀 다운로드 (주문번호 목록)</button><div class="dm-sub">이 건들은 이번 차감에 포함되지 않습니다. 1688 주문 내보내기에 빠졌는지 확인하세요.</div>` : '')
+      + `</div>`;
+    matchHtml += `<div class="dm-row dm-muted">ℹ️ 주문건에는 없으나 엑셀에 있음 <b>${m.extraInExcel}</b>건 (1688 주문 ${m.extraOrders}건 — 다른 주문, 제외)</div>`;
+    if (m.qtyMismatch.length) {
+      matchHtml += `<div class="dm-row dm-warn">⚠️ 메모 수량 ≠ 주문 수량 <b>${m.qtyMismatch.length}</b>건<div class="dm-sub">${m.qtyMismatch.slice(0, 5).map(q => `${esc(q.itemNo)}: 메모 ${q.memoQty} / 주문 ${q.orderQty}`).join('<br>')}${m.qtyMismatch.length > 5 ? '<br>…' : ''}</div></div>`;
+    }
+  } else {
+    matchHtml += `<div class="dm-row dm-muted">ℹ️ 포함 1688 주문 ${calc.included.orders}건 / 제외 ${calc.excluded.orders}건 (품번 정보 없음 — 주문코드 기준)</div>`;
+  }
+
+  const after = balanceNow !== null ? balanceNow - calc.amount : null;
+  body.innerHTML = `
+    <div class="dm-head">
+      <div><b>${esc(calc.orderCode)}</b> · ${esc(venderName)} (${esc(userCode)})</div>
+      <div class="dm-sub">엑셀 1688 주문 ${calc.included.orders + calc.excluded.orders}건 중 포함 <b>${calc.included.orders}</b>건 (${calc.included.rows}행)</div>
+    </div>
+    <div class="dm-section">${matchHtml}</div>
+    <div class="dm-section dm-amount">
+      <div class="dm-row">상품가 ${yen(calc.price)} + 배송비 ${yen(calc.delivery_fee)} + 수수료 ${yen(calc.service_fee)}</div>
+      <div class="dm-row dm-total">💰 차감액 <b>${yen(calc.amount)}</b> <span class="dm-sub">수량 ${calc.item_qty}개</span></div>
+      ${balanceNow !== null ? `<div class="dm-row dm-muted">잔액 ${yen(balanceNow)} → <b>${yen(after)}</b></div>` : ''}
+    </div>`;
+
+  modal.style.display = 'flex';
+  return new Promise(resolve => { _deductModalResolve = resolve; });
+}
+function closeDeductConfirmModal(result) {
+  const modal = document.getElementById('deductConfirmModal');
+  if (modal) modal.style.display = 'none';
+  const r = _deductModalResolve; _deductModalResolve = null;
+  if (r) r(!!result);
+}
+// 성공인데 엑셀에 없는 품번 목록을 xlsx 로 저장
+function downloadDeductMissingExcel() {
+  const m = _deductModalCtx?.calc?.match;
+  if (!m || !m.missing.length) return;
+  const rows = [['주문번호(품번)', '상품명', '옵션', '수량', '1688 주문번호(등록)']];
+  m.missing.forEach(it => rows.push([it.itemNo, it.itemName || '', it.optionName || '', it.qty ?? '', it.orderNo1688 || '']));
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 22 }, { wch: 40 }, { wch: 24 }, { wch: 6 }, { wch: 22 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '엑셀에 없는 주문');
+  XLSX.writeFile(wb, `차감누락_${_deductModalCtx.calc.orderCode}.xlsx`);
+}
+
 async function processDeductExcelV2(file) {
   const btnDeductV2 = document.getElementById('btnDeductV2');
   const originalText = btnDeductV2 ? btnDeductV2.textContent : '차감';
@@ -5255,6 +5332,15 @@ async function processDeductExcelV2(file) {
     const sessionOfferIds = new Set(
       orders.map(o => { const m = (o?.url || '').match(/offer\/(\d+)\.html/); return m ? m[1] : ''; }).filter(Boolean)
     );
+    // (2026-10-26) 품번 단위 대조: 현재 주문의 '성공' 행(V2 저장과 같은 기준) 품번·수량을 파서에 넘긴다.
+    //   메모의 주문코드가 세션 중간에 바뀌어도(예: B03→B13) 품번이 현재 주문 것이면 포함된다.
+    const sessionItems = orders.filter(isDeductSuccessOrder).map(o => ({
+      itemNo: itemNoOf(o),
+      qty: Number(o.quantity) || 0,
+      itemName: o.dbData?.item_name || '',
+      optionName: o.dbData?.option_name || '',
+      orderNo1688: o.dbData?.['1688_order_id'] || '',
+    })).filter(it => it.itemNo);
     let calc;
     try {
       calc = DeductParser.parseDeductWorksheet(worksheet, XLSX, {
@@ -5262,6 +5348,7 @@ async function processDeductExcelV2(file) {
         selectedUserCode: userCode,
         session1688OrderIds,
         sessionOfferIds,
+        sessionItems,
       });
     } catch (e) {
       if (e instanceof DeductParser.DeductParseError) { alert(e.message); return; }
@@ -5299,38 +5386,20 @@ async function processDeductExcelV2(file) {
       return;
     }
 
-    // ── 4) 확인 (분류 결과 + 교차검증 경고 포함) ──
-    const exByCode = Object.entries(calc.excluded.byCode).map(([c, n]) => `${c} ${n}건`).join(', ');
-    const excludedLine = calc.excluded.orders > 0
-      ? `제외: 1688 주문 ${calc.excluded.orders}건` +
-        `${exByCode ? ` (다른 주문코드: ${exByCode})` : ''}${calc.excluded.noMemo ? ` (메모 없음 ${calc.excluded.noMemo}건)` : ''}\n`
-      : `제외: 없음 (엑셀 전체가 이 주문)\n`;
-    const crossLine = calc.crossCheck.checked1688
-      ? (calc.crossCheck.missingInExcel.length || calc.crossCheck.notInSession.length ? '교차검증(1688 주문번호): ⚠ 불일치\n' : '교차검증(1688 주문번호): 일치\n')
-      : '교차검증(1688 주문번호): 생략 (주문번호 등록 안 됨)\n';
-    const proceed = confirm(
-      `차감을 진행합니다.\n\n` +
-      `주문코드: ${calc.orderCode}\n` +
-      `사업자: ${venderName} (${userCode})\n` +
-      `차감액: ¥${calc.amount.toLocaleString()}\n` +
-      `  상품가 ¥${calc.price.toLocaleString()} + 배송비 ¥${calc.delivery_fee.toLocaleString()} + 수수료 ¥${calc.service_fee.toLocaleString()}\n` +
-      `수량: ${calc.item_qty}개 / 포함 1688 주문 ${calc.included.orders}건 (${calc.included.rows}행)\n` +
-      excludedLine + crossLine +
-      (calc.warnings.length ? `\n⚠ 경고\n${calc.warnings.map(w => '  · ' + w).join('\n')}\n` : '') +
-      `\n진행할까요?`
-    );
+    // ── 4) 확인 모달 (2026-10-26): 주문건 ↔ 엑셀 품번 대조 결과 + 금액 + [취소]/[차감] ──
+    //   현재 잔액은 표시용으로만 조회 (실제 차감 기준은 RPC 안의 직전 원장 스냅샷)
+    let balanceNow = null;
+    try {
+      const { data: lastTx } = await supabaseClient
+        .from('ft_user_transactions').select('balance_snapshot')
+        .eq('balance_id', balanceId).order('created_at', { ascending: false }).limit(1);
+      if (lastTx && lastTx.length) balanceNow = Number(lastTx[0].balance_snapshot);
+    } catch (_) {}
+
+    const proceed = await showDeductConfirmModal({ calc, venderName, userCode, balanceNow });
     if (!proceed) {
       alert('차감이 취소되었습니다.');
       return;
-    }
-    // 경고가 있으면 한 번 더 확인 (누락/오기재 가능성)
-    if (calc.warnings.length) {
-      const detail = [];
-      if (calc.crossCheck.missingInExcel.length) detail.push(`엑셀에 없는 1688 주문: ${calc.crossCheck.missingInExcel.slice(0, 10).join(', ')}${calc.crossCheck.missingInExcel.length > 10 ? ' …' : ''}`);
-      if (calc.crossCheck.notInSession.length)   detail.push(`주문목록에 없는 1688 주문: ${calc.crossCheck.notInSession.slice(0, 10).join(', ')}${calc.crossCheck.notInSession.length > 10 ? ' …' : ''}`);
-      if (calc.crossCheck.unknownOffers.length)  detail.push(`주문목록에 없는 Offer ID: ${calc.crossCheck.unknownOffers.slice(0, 10).join(', ')}${calc.crossCheck.unknownOffers.length > 10 ? ' …' : ''}`);
-      const again = confirm(`⚠ 교차검증 경고가 있습니다.\n\n${detail.join('\n')}\n\n내용을 확인했고 그대로 차감을 진행할까요?`);
-      if (!again) { alert('차감이 취소되었습니다.'); return; }
     }
 
     // ── 5) RPC v2 (한 트랜잭션) ──
