@@ -306,3 +306,4 @@ automation.js `processGroupOrder` 수량 입력 직후:
 - 시점: 주소 확정(Section 6) 직후 + 제출 직전 재확인 (가격 재계산으로 되돌아가는 경우 대비).
 - 정책: 영역 없음 → 그대로 진행 / 선택지를 찾았는데 선택 실패 → **제출하지 않고 중단** + 안내 / 선택지 자체를 못 찾음(구조 미확인) → 경고 로그(샘플 HTML 700자)만 남기고 진행(현재 동작과 동일).
 - 확인: 콘솔 `[配送方式] sections=…, found=…, already=…, clicked=…` → `결과: … OK`. found=0 이면 샘플 로그를 보내주면 구조에 맞게 조정.
+- v1.0.75 수정: 실측 결과 `official-delivery-method-pc` 가 shadow DOM 3겹(official-delivery-service › official-delivery-pc-content › official-delivery-method-pc) 안에 있어 문서 최상위 탐색으로는 "영역 없음"이 되던 문제 수정. 선택지는 `.pc-content-radio-item > q-radio[value="normal"]`(商家配送) / `[value="official"]`(官方配送), 선택 상태는 `checked="true"`. 열린 주문확인 페이지(4블록)에서 일괄 선택 → 전부 normal=true 확인.

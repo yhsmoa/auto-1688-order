@@ -3496,62 +3496,59 @@ async function selectShopCheckboxesBatch(page, shopCount) {
 
 // ========================================
 // 配送方式 → 商家配送 일괄 선택 (주문확인 페이지) — 2026-10-26
-// - 주문확인 페이지에 <official-delivery-method-pc> (配送方式) 영역이 있으면 모든 블록에서 "商家配送" 을 선택한다.
-// - 선택지는 커스텀 엘리먼트 내부(shadow DOM)에 그려지므로 shadowRoot 까지 재귀 탐색한다.
-// - 1회 evaluate 로 미선택 항목을 전부 클릭 → 1회 evaluate 로 선택 상태 재확인 → 남은 것만 Playwright 클릭 폴백.
-// - 판정: 선택지(또는 가까운 조상)의 class 에 selected/active/checked/current, aria-checked/selected="true",
-//         내부 radio checked 중 하나면 '선택됨'.
-// - 반환: { present, found, selected, unselected, ok, sample }
-//     present=false → 配送方式 영역 없음(그대로 진행) / found=0 → 선택지를 못 찾음(경고 후 진행, sample 로그로 구조 확인)
-//     found>0 && unselected>0 → 선택 실패(호출측이 제출 전 중단)
+// 실측 구조 (2026-10-26, smart_make_order):
+//   .order-inner > .order-footer > <official-delivery-service> #shadow > <official-delivery-pc-content> #shadow
+//     > <official-delivery-method-pc> #shadow > .pc-content-radio > .pc-content-radio-item
+//         <q-radio value="normal"   checked="true|false">  + .pc-content-radio-item-title "商家配送" + .price
+//         <q-radio value="official" checked="true|false">  + .pc-content-radio-item-title "官方配送" + .discount
+//   → 商家配送 = q-radio[value="normal"], 선택됨 = checked="true". 요소가 shadow DOM 3겹 안에 있어
+//     document.querySelectorAll 로는 안 보이므로 shadowRoot 를 재귀 탐색한다.
+// 절차: 1회 evaluate 로 모든 블록의 미선택 商家配送 라디오 클릭 → 1회 evaluate 로 checked 재확인
+//       → 남은 것만 Playwright 로케이터(open shadow DOM 투과) 클릭 폴백 → 재확인.
+// 반환: { present, found, selected, unselected, ok, sample }
+//   present=false → 配送方式 영역 없음(그대로 진행) / found=0 → 라디오를 못 찾음(경고 후 진행, sample 로그)
+//   found>0 && unselected>0 → 선택 실패(호출측이 제출 전 중단)
 // ========================================
 const MERCHANT_DELIVERY_TEXT = '商家配送';
 
 async function scanMerchantDelivery(page, doClick) {
   return await page.evaluate(({ target, doClick }) => {
-    const sections = [...document.querySelectorAll('official-delivery-method-pc')];
     const deep = (root, out) => {
       root.querySelectorAll('*').forEach(el => { out.push(el); if (el.shadowRoot) deep(el.shadowRoot, out); });
       return out;
     };
-    const hostOf = (n) => { const r = n.getRootNode && n.getRootNode(); return (r && r.host) ? r.host : null; };
-    const isSelected = (el) => {
-      let n = el;
-      for (let i = 0; i < 5 && n && n.nodeType === 1; i++) {
-        const cls = (n.getAttribute && n.getAttribute('class')) || '';
-        if (/(^|[\s_-])(selected|active|checked|current|is-checked|is-active|on)([\s_-]|$)/i.test(cls)) return true;
-        if (n.getAttribute && (n.getAttribute('aria-checked') === 'true' || n.getAttribute('aria-selected') === 'true' || n.getAttribute('checked') === 'true' || n.hasAttribute('checked') && n.getAttribute('checked') !== 'false')) return true;
-        const radio = n.querySelector && n.querySelector('input[type="radio"]');
-        if (radio && radio.checked) return true;
-        n = n.parentElement || hostOf(n);
-      }
-      return false;
+    const all = deep(document, []);
+    const hosts = all.filter(el => el.tagName === 'OFFICIAL-DELIVERY-METHOD-PC');
+    const report = { present: hosts.length > 0, sections: hosts.length, found: 0, selected: 0, unselected: 0, clicked: 0, sample: '' };
+    const isChecked = (radio) => {
+      const a = radio.getAttribute('checked');
+      if (a !== null) return a !== 'false';
+      if (radio.getAttribute('aria-checked') === 'true') return true;
+      const inp = radio.querySelector && radio.querySelector('input[type="radio"]');
+      return !!(inp && inp.checked);
     };
-    const report = { present: sections.length > 0, sections: sections.length, found: 0, selected: 0, unselected: 0, clicked: 0, sample: '' };
-    sections.forEach((sec, si) => {
-      const all = deep(sec, []);
-      if (sec.shadowRoot) deep(sec.shadowRoot, all);
-      // target 텍스트를 정확히 가진 가장 안쪽 요소만 (부모·자식이 같은 텍스트면 자식 우선)
-      const cands = all.filter(el => (el.textContent || '').trim() === target
-        && ![...el.children].some(c => (c.textContent || '').trim() === target));
-      if (si === 0) {
-        const html = sec.shadowRoot ? sec.shadowRoot.innerHTML : sec.innerHTML;
-        report.sample = (html || '').replace(/\s+/g, ' ').slice(0, 700);
-      }
-      cands.forEach(el => {
+    hosts.forEach((host, hi) => {
+      const root = host.shadowRoot || host;
+      const scope = deep(root, []);
+      if (hi === 0) report.sample = (root.innerHTML || '').replace(/\s+/g, ' ').slice(0, 700);
+      // 1차: 제목이 商家配送 인 항목의 q-radio / 2차: value="normal" 라디오
+      const items = scope.filter(el => el.classList && el.classList.contains('pc-content-radio-item'));
+      let radios = items
+        .filter(it => { const t = it.querySelector('.pc-content-radio-item-title'); return t && (t.textContent || '').trim() === target; })
+        .map(it => it.querySelector('q-radio')).filter(Boolean);
+      if (radios.length === 0) radios = scope.filter(el => el.tagName === 'Q-RADIO' && el.getAttribute('value') === 'normal');
+      radios.forEach(radio => {
         report.found++;
-        if (isSelected(el)) { report.selected++; return; }
+        if (isChecked(radio)) { report.selected++; return; }
         report.unselected++;
         if (!doClick) return;
-        // 클릭 대상: label / radio·option·item 류 조상이 있으면 그것, 없으면 자기 자신
-        let clickEl = el;
-        let n = el;
-        for (let i = 0; n && i < 3; i++) {
-          const cls = (n.getAttribute && n.getAttribute('class')) || '';
-          if (n.tagName === 'LABEL' || /radio|option|item|choice|method/i.test(cls)) { clickEl = n; break; }
-          n = n.parentElement || hostOf(n);
-        }
-        try { clickEl.click(); report.clicked++; } catch (_) {}
+        try {
+          // q-radio 자체 → 내부 input → 항목 컨테이너 순으로 클릭 시도 (첫 성공 기준은 재확인 단계에서 판정)
+          radio.click();
+          const inner = radio.shadowRoot && radio.shadowRoot.querySelector('input, [role="radio"], .q-radio, label');
+          if (inner) inner.click();
+          report.clicked++;
+        } catch (_) {}
       });
     });
     return report;
@@ -3566,22 +3563,26 @@ async function selectMerchantDelivery(page) {
   }
   console.log(`  [配送方式] sections=${r.sections}, found=${r.found}, already=${r.selected}, clicked=${r.clicked}`);
   if (r.found === 0) {
-    console.log(`  [配送方式] ! "${MERCHANT_DELIVERY_TEXT}" 선택지를 찾지 못함 — 구조 확인용 샘플: ${r.sample}`);
+    console.log(`  [配送方式] ! "${MERCHANT_DELIVERY_TEXT}" 라디오를 찾지 못함 — 구조 확인용 샘플: ${r.sample}`);
     return { present: true, found: 0, selected: 0, unselected: 0, ok: false, unknownMarkup: true, sample: r.sample };
   }
-  if (r.clicked > 0) await page.waitForTimeout(700);
+  if (r.clicked > 0) await page.waitForTimeout(800);
 
   // 재확인 (클릭 없이 상태만)
   let v = await scanMerchantDelivery(page, false);
   if (v.unselected > 0) {
-    // 폴백: Playwright 로케이터(open shadow DOM 투과) 로 개별 클릭
+    // 폴백: Playwright 로케이터는 open shadow DOM 을 투과한다 → q-radio[value="normal"] 를 하나씩 클릭
     console.log(`  [配送方式] ${v.unselected}개 미선택 → Playwright 클릭 폴백`);
-    const loc = page.locator('official-delivery-method-pc').locator(`:text-is("${MERCHANT_DELIVERY_TEXT}")`);
+    const loc = page.locator('official-delivery-method-pc q-radio[value="normal"]');
     const n = await loc.count().catch(() => 0);
     for (let i = 0; i < n; i++) {
-      try { await loc.nth(i).click({ timeout: 3000 }); } catch (_) {}
+      try {
+        const checked = await loc.nth(i).getAttribute('checked');
+        if (checked === 'true') continue;
+        await loc.nth(i).click({ timeout: 3000 });
+      } catch (_) {}
     }
-    await page.waitForTimeout(700);
+    await page.waitForTimeout(800);
     v = await scanMerchantDelivery(page, false);
   }
   const ok = v.found > 0 && v.unselected === 0;
@@ -3801,4 +3802,4 @@ async function askInquiry(group) {
   }
 }
 
-module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints };
+module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery };
