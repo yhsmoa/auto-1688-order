@@ -1870,10 +1870,31 @@ function renderOrderList() {
     const orderNoSplit = (order.orderNo || '').split('-');
     const isSet = orderNoSplit.length >= 4 && orderNoSplit[3].toUpperCase().startsWith('S');
 
+    // (2026-10-25) 세트 표시 강화: 'SET 1/2' (몇 번째/총 몇 개) + 툴팁에 같은 세트 짝 목록 + 클릭 시 세트 공통 품번으로 필터
+    //   세트 식별은 getSetKey/findSetSiblingIndexes 와 동일 (주문코드 + 품번 앞 3구간 + set_total)
+    let setBadgeHtml = '';
+    if (isSet) {
+      const db = order.dbData || {};
+      const suffix = orderNoSplit[3].toUpperCase();                                   // 예: S21 → 총 2 중 1번째
+      const total  = parseInt(db.set_total, 10) || parseInt(suffix.slice(1, -1), 10) || 0;
+      const seq    = parseInt(db.set_seq, 10)   || parseInt(suffix.slice(-1), 10)    || 0;
+      const productNo = orderNoSplit.slice(0, 3).join('-');                           // 세트 공통 품번 (예: BO-261025-0245)
+      const escAttr = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const sibs = findSetSiblingIndexes(index).map(i => {
+        const d = orders[i].dbData || {};
+        return `${itemNoOf(orders[i])}  ${d.item_name || ''}${d.option_name ? ', ' + d.option_name : ''}`;
+      });
+      const tip = sibs.length
+        ? `같은 세트 ${sibs.length + 1}건 중 ${seq || '?'}번째\n짝:\n${sibs.join('\n')}\n\n클릭: 이 세트만 보기 (${productNo})`
+        : `세트 짝을 현재 목록에서 찾지 못했습니다\n클릭: ${productNo} 검색`;
+      const label = (seq && total) ? `SET ${seq}/${total}` : 'SET';
+      setBadgeHtml = `<span class="set-badge set-badge-click" title="${escAttr(tip)}" onclick="event.stopPropagation(); searchByValue('${productNo}')">${label}</span> `;
+    }
+
     let orderNoCellContent = `
       ${(itemLabel || isSet) ? `
       <div class="cell-item-label" title="${itemLabel.replace(/"/g, '&quot;')}">
-        ${isSet ? '<span class="set-badge">SET</span> ' : ''}${itemLabel}
+        ${setBadgeHtml}${itemLabel}
       </div>` : ''}
       <div style="display:flex; align-items:center; gap:4px;">
         <span class="cell-clickable"

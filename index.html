@@ -1065,9 +1065,13 @@
       padding: 1px 5px;
       border-radius: 3px;
       margin-right: 3px;
+      white-space: nowrap;
       vertical-align: middle;
       line-height: 1.4;
     }
+    /* (2026-10-25) 세트 배지 클릭 → 같은 세트만 필터, 툴팁에 짝 목록 */
+    .set-badge-click { cursor: pointer; }
+    .set-badge-click:hover { background: #c94f00; }
 
     /* 주황색 행 네비게이션 패널 (우측 하단 고정) */
     .orange-nav-panel {
