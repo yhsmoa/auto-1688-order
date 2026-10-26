@@ -1453,7 +1453,9 @@ async function startReview(orders, onReviewProgress) {
     let missingFromDom = [...accumulated.keys()].filter(k => !finalKeys.has(k)).length;
     const kindsOf = (list) => new Set(list.map(cartKey)).size;
     let passes = 0;
-    while (passes < 2) {
+    // (v1.0.81) 추가 패스는 최대 1회. 전체 종류 수(sumOfKind)에는 품절·무효 상품처럼 화면에 안 그려지는 것도 포함될 수 있어
+    //   매번 2회(최대 3분)를 더 돌던 것이 검수가 느려진 주원인이었다.
+    while (passes < 1) {
       const kinds = kindsOf([...cartItems, ...accumulated.values()]);
       const needByCount = cartKindCount !== null && kinds < cartKindCount;
       if (!needByCount && missingFromDom === 0) break;
@@ -2784,7 +2786,8 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
   const emptySellerNames = [];
   let iterationCount = 0;
   let stoppedByEmptyTextarea = false;
-  let stoppedByDeliveryMethod = false;   // 配送方式 → 商家配送 선택 실패로 제출 전 중단
+  let stoppedByDeliveryMethod = false;   // 配送方式: 官方配送이 선택된 것이 확인된 경우에만 제출 전 중단 (v1.0.81)
+  const deliveryWarnings = [];           // 商家配送 선택을 확인하지 못했지만 진행한 묶음 (보고용)
   // (2026-10-26) 정상 종료(장바구니에 남은 상점 없음)만 '완료'. 그 외 break 는 모두 중단으로 보고한다.
   let normalEnd = false;
   let unconfirmedStreak = 0;             // 제출은 반영됐으나 성공 페이지 미확인 — 연속 횟수
@@ -2957,6 +2960,8 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
           if (st && prev && st.inners === prev.inners && st.tas === prev.tas) stable++; else stable = 0;
           prev = st;
           if (st && st.inners > 0 && st.tas === st.inners && stable >= 1) break;
+          // (v1.0.81) 메모칸이 없는 주문 블록이 있으면 수가 영원히 같아지지 않는다 → 수가 2회 연속 안정되면 진행 (60초 공회전 방지)
+          if (st && st.inners > 0 && stable >= 2) { console.log(`  ! textarea ${st.tas}/${st.inners} — 수가 안정되어 진행`); break; }
         }
         console.log(`+ Order confirmation page ready (${Date.now() - readyStart}ms, orders=${prev?.inners}, textareas=${prev?.tas})`);
       }
@@ -3186,11 +3191,16 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
       checkShouldStop();
       await page.waitForTimeout(500);
       deliveryMethodInfo = await selectMerchantDelivery(page);
-      if (deliveryMethodInfo.present && deliveryMethodInfo.found > 0 && !deliveryMethodInfo.ok) {
+      // (v1.0.81) 官方配送 이 선택된 것이 '확인'된 경우만 중단. 상태를 읽지 못한 경우는 경고로 기록하고 진행 (예전 동작).
+      if (deliveryMethodInfo.present && deliveryMethodInfo.wrong) {
         stoppedByDeliveryMethod = true;
-        exitReason = `配送方式 商家配送 선택 실패 (${deliveryMethodInfo.unselected}/${deliveryMethodInfo.found} 미선택)`;
+        exitReason = `配送方式 에 官方配送 이 선택되어 있음 (商家配送 전환 실패 ${deliveryMethodInfo.unselected}/${deliveryMethodInfo.found})`;
         console.log(`\n!!! ${exitReason} — stopping before submit.`);
         break;
+      }
+      if (deliveryMethodInfo.present && !deliveryMethodInfo.ok) {
+        deliveryWarnings.push({ iteration: iterationCount, stage: 'select', ...deliveryMethodInfo, sample: undefined });
+        console.log(`  ! [配送方式] 선택 상태를 확인하지 못함 (found=${deliveryMethodInfo.found}, unselected=${deliveryMethodInfo.unselected}) — 경고 기록 후 진행`);
       }
 
       // ── Section 6.5: 주문 제출 버튼 클릭 ──
@@ -3213,12 +3223,16 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
       // 제출 직전 재확인: 가격 재계산 등으로 配送方式 이 되돌아갔으면 다시 선택 (선택지가 있던 경우만)
       if (deliveryMethodInfo.present && deliveryMethodInfo.found > 0) {
         const recheck = await selectMerchantDelivery(page);
-        if (recheck.found > 0 && !recheck.ok) {
+        if (recheck.wrong) {
           stoppedByDeliveryMethod = true;
           deliveryMethodInfo = recheck;
-          exitReason = `配送方式 商家配送 재확인 실패 (${recheck.unselected}/${recheck.found} 미선택)`;
+          exitReason = `配送方式 재확인: 官方配送 이 선택되어 있음 (${recheck.unselected}/${recheck.found})`;
           console.log(`\n!!! ${exitReason} — stopping before submit.`);
           break;
+        }
+        if (!recheck.ok) {
+          deliveryWarnings.push({ iteration: iterationCount, stage: 'recheck', ...recheck, sample: undefined });
+          console.log(`  ! [配送方式] 재확인 상태 불명 (found=${recheck.found}, unselected=${recheck.unselected}) — 경고 기록 후 진행`);
         }
       }
 
@@ -3227,20 +3241,19 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
       //   이중 주문 위험이 있어 제출 버튼은 자동 재클릭하지 않는다. (다시 실행하면 장바구니에 남은 상품부터 이어서 처리)
       //   반영됐는데 40초 안에 성공 페이지를 못 보면 '미확인' 으로 기록(성공 처리 안 함) 후 장바구니로 돌아가 계속, 연속 2회면 중단.
       console.log('  Waiting for submission to complete...');
+      // (v1.0.81) v1.0.77 의 '8초 안에 반응 없으면 제출 안 된 것으로 중단' 판정을 제거 — 실제 페이지에서 그 신호가 안 잡혀
+      //   정상 클릭도 중단시켰다. 예전 방식으로 복귀: 클릭 → 성공 페이지 최대 40초 대기 → 못 보면 성공 처리 없이 장바구니로 돌아가 계속.
+      //   같은 일이 5회 연속이면 그때만 멈춘다(무한 반복 방지).
       const submitOutcome = await clickSubmitAndConfirm(page, submitBtnSelector);
-      if (submitOutcome.status === 'not_registered') {
-        exitReason = `提交订单 클릭이 반영되지 않아 제출되지 않음${submitOutcome.message ? ' — ' + submitOutcome.message : ''}`;
-        console.log(`  X ${exitReason}`);
-        break;
-      }
       if (submitOutcome.status !== 'success') {
         unconfirmedStreak++;
         unconfirmedBatches.push({ iteration: iterationCount, count: currentBatchIndexes.length, status: submitOutcome.status, url: submitOutcome.url, message: submitOutcome.message || '' });
-        console.log(`  ! 제출 후 성공 페이지 미확인 (${submitOutcome.status}, url=${submitOutcome.url}) - 이번 배치(${currentBatchIndexes.length}건) 성공 처리 안 함 (연속 ${unconfirmedStreak}회)`);
-        if (unconfirmedStreak >= 2) {
+        console.log(`  ! 제출 후 성공 페이지 미확인 (${submitOutcome.status}, url=${submitOutcome.url}, signal=${submitOutcome.signal || '-'}) - 이번 배치(${currentBatchIndexes.length}건) 성공 처리 안 함 (연속 ${unconfirmedStreak}회) → 장바구니로 복귀`);
+        if (unconfirmedStreak >= 5) {
           exitReason = `제출 후 성공 페이지 확인 실패가 연속 ${unconfirmedStreak}회 — 1688 주문 목록에서 직접 확인 필요`;
           break;
         }
+        await page.waitForTimeout(3000);
         continue;
       }
       unconfirmedStreak = 0;
@@ -3279,7 +3292,7 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
       failedOrderIndexes, iterationCount,
       stoppedByUser: false, stoppedByEmptyTextarea,
       stoppedByDeliveryMethod, deliveryMethodInfo,
-      normalEnd, unconfirmedBatches,
+      normalEnd, unconfirmedBatches, deliveryWarnings,
       exitReason
     };
 
@@ -3292,7 +3305,7 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
         failedOrderIndexes, iterationCount,
         stoppedByUser: true, stoppedByEmptyTextarea: false,
         stoppedByDeliveryMethod: false, deliveryMethodInfo,
-        normalEnd: false, unconfirmedBatches,
+        normalEnd: false, unconfirmedBatches, deliveryWarnings,
         exitReason: '사용자 중지'
       };
     }
@@ -3336,32 +3349,33 @@ async function readPageNotice(page) {
 }
 
 // 结算 클릭 → 주문확인 페이지 진입 확인. 결산은 돈이 나가지 않으므로 이동이 없으면 재클릭(최대 maxAttempts).
+//   (v1.0.81) 활성 상태 1회 확인 즉시 클릭(예전과 동일). 주소가 바뀌면 주문 블록이 그려질 때까지 최대 180초 대기.
 async function clickSettleAndWaitConfirm(page, settleSel, maxAttempts = 3) {
   let message = '';
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     checkShouldStop();
-    // 가격 재계산 중 클릭 방지: 0.5초 간격 2회 연속 '활성' 일 때만 클릭 (최대 10초)
-    let stable = 0;
-    for (let i = 0; i < 20 && stable < 2; i++) {
-      await page.waitForTimeout(500);
-      const en = await page.locator(settleSel).first()
+    // 버튼 활성 대기 (최대 30초, 1초 간격 — 예전 폴링과 동일)
+    let enabled = false;
+    for (let i = 0; i < 30; i++) {
+      checkShouldStop();
+      enabled = await page.locator(settleSel).first()
         .evaluate(el => !(el.disabled || el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true'))
         .catch(() => false);
-      stable = en ? stable + 1 : 0;
+      if (enabled) break;
+      await page.waitForTimeout(1000);
     }
-    if (stable < 2) { message = '结算 버튼이 활성화되지 않음'; console.log(`  ! ${message} (attempt ${attempt})`); continue; }
+    if (!enabled) { message = '结算 버튼이 활성화되지 않음'; console.log(`  ! ${message} (attempt ${attempt})`); continue; }
 
-    await page.locator(settleSel).first().click({ timeout: 10000 })
+    await page.locator(settleSel).first().click({ timeout: 30000 })
       .catch(e => { message = 'click error: ' + String(e.message).split('\n')[0]; });
     console.log(`+ 结算 button clicked (attempt ${attempt}/${maxAttempts})`);
 
     const start = Date.now();
-    while (Date.now() - start < 45000) {              // 주소가 바뀔 때까지 최대 45초 (느린 PC·대량 주문 대응)
+    while (Date.now() - start < 45000) {              // 주소가 바뀔 때까지 최대 45초
       checkShouldStop();
       await page.waitForTimeout(500);
       if (ORDER_CONFIRM_URL_RE.test(page.url())) {
-        // 주소는 넘어왔다 → 페이지가 그려질 때까지 기다린다. 대량 주문(수백 건)은 1분 이상 걸릴 수 있으므로
-        // 최대 180초, 10초마다 진행 로그. 로딩 중인 페이지를 '안 넘어감'으로 판정하지 않는다. (v1.0.78)
+        // 주소는 넘어왔다 → 주문 블록이 그려질 때까지 최대 180초 (대량 주문 대응), 10초마다 진행 로그
         const renderStart = Date.now();
         let lastLog = 0;
         while (Date.now() - renderStart < 180000) {
@@ -3388,12 +3402,11 @@ async function clickSettleAndWaitConfirm(page, settleSel, maxAttempts = 3) {
   return { ok: false, attempts: maxAttempts, message };
 }
 
-// 提交订单 클릭 → 반영 확인 → 성공 페이지 대기.
-//   반환 status: 'success' | 'not_registered'(클릭 미반영, 제출 안 됨) | 'stuck'(반영됐으나 같은 페이지) | 'left_unknown'(다른 페이지로 이동했으나 성공 패턴 아님)
+// 提交订单 클릭 → 성공 페이지 대기 (최대 40초). (v1.0.81) 예전 방식 복귀 — 클릭 반영 신호로 중단하지 않는다.
+//   반환 status: 'success' | 'unconfirmed'   (signal: 참고용 — loading/gone/url 변화 여부)
 //   제출 버튼은 이중 주문 위험 때문에 자동 재클릭하지 않는다.
 async function clickSubmitAndConfirm(page, submitSel) {
   const startUrl = page.url();
-  // 클릭 직후의 짧은 loading 전환도 놓치지 않도록 MutationObserver 를 먼저 건다
   await page.evaluate((sel) => {
     window.__submitSignal = { loading: false, gone: false };
     const btns = [...document.querySelectorAll(sel)];
@@ -3410,45 +3423,28 @@ async function clickSubmitAndConfirm(page, submitSel) {
   }, submitSel).catch(() => {});
 
   let message = '';
-  await page.locator(submitSel).last().click({ timeout: 10000 })
-    .catch(e => { message = 'click error: ' + String(e.message).split('\n')[0]; });
+  await page.locator(submitSel).last().click({ timeout: 30000 })
+    .catch(e => { message = 'click error: ' + String(e.message).split('\n')[0]; console.log(`  ! submit ${message}`); });
   console.log('  + Submit order button clicked');
 
-  const readSignal = () => page.evaluate(() => window.__submitSignal || null).catch(() => null);
   const cleanup = () => page.evaluate(() => { try { window.__submitMO && window.__submitMO.disconnect(); } catch (_) {} }).catch(() => {});
-
-  // 1) 8초 안에 반영 신호 확인
-  let registered = false;
-  for (let t = 0; t < 16; t++) {
+  let signal = '';
+  for (let t = 0; t < 80; t++) {            // 40초
     await page.waitForTimeout(500);
     checkShouldStop();
     const url = page.url();
-    if (SUBMIT_SUCCESS_URL_RE.test(url)) { await cleanup(); return { status: 'success', url }; }
-    if (url !== startUrl) { registered = true; break; }
-    const sig = await readSignal();
-    if (sig && (sig.loading || sig.gone)) { registered = true; break; }
-  }
-  if (!registered) {
-    const stillThere = await page.locator(submitSel).count().catch(() => 0);
-    if (stillThere > 0 && page.url() === startUrl) {
-      message = (await readPageNotice(page)) || message;
-      await cleanup();
-      return { status: 'not_registered', url: page.url(), message };
+    if (SUBMIT_SUCCESS_URL_RE.test(url)) { await cleanup(); return { status: 'success', url, signal }; }
+    if (!signal) {
+      const sig = await page.evaluate(() => window.__submitSignal || null).catch(() => null);
+      if (url !== startUrl) signal = 'url';
+      else if (sig && sig.loading) signal = 'loading';
+      else if (sig && sig.gone) signal = 'gone';
     }
-    registered = true;   // 버튼이 사라졌거나 상태가 바뀜 → 반영된 것으로 보고 대기
-  }
-
-  // 2) 반영됨 → 성공 페이지 대기 (최대 40초)
-  for (let t = 0; t < 80; t++) {
-    const url = page.url();
-    if (SUBMIT_SUCCESS_URL_RE.test(url)) { await cleanup(); return { status: 'success', url }; }
-    await page.waitForTimeout(500);
-    checkShouldStop();
   }
   const finalUrl = page.url();
   message = (await readPageNotice(page)) || message;
   await cleanup();
-  return { status: finalUrl === startUrl ? 'stuck' : 'left_unknown', url: finalUrl, message };
+  return { status: 'unconfirmed', url: finalUrl, signal: signal || 'none', message };
 }
 
 async function scrollUntilShopCount(page, targetCount, maxMs = 60000) {
@@ -3702,9 +3698,13 @@ async function scanMerchantDelivery(page, doClick) {
       root.querySelectorAll('*').forEach(el => { out.push(el); if (el.shadowRoot) deep(el.shadowRoot, out); });
       return out;
     };
-    const all = deep(document, []);
+    // (v1.0.81) 탐색 범위를 주문 블록의 배송 영역으로 한정 (문서 전체 shadow DOM 재귀는 큰 페이지에서 수 초씩 걸림)
+    let roots = [...document.querySelectorAll('.order-inner .order-footer official-delivery-service, .order-inner official-delivery-service')];
+    if (roots.length === 0) roots = [document];
+    const all = [];
+    roots.forEach(r => deep(r, all));
     const hosts = all.filter(el => el.tagName === 'OFFICIAL-DELIVERY-METHOD-PC');
-    const report = { present: hosts.length > 0, sections: hosts.length, found: 0, selected: 0, unselected: 0, clicked: 0, sample: '' };
+    const report = { present: hosts.length > 0, sections: hosts.length, found: 0, selected: 0, unselected: 0, officialSelected: 0, clicked: 0, sample: '' };
     const isChecked = (radio) => {
       const a = radio.getAttribute('checked');
       if (a !== null) return a !== 'false';
@@ -3722,6 +3722,8 @@ async function scanMerchantDelivery(page, doClick) {
         .filter(it => { const t = it.querySelector('.pc-content-radio-item-title'); return t && (t.textContent || '').trim() === target; })
         .map(it => it.querySelector('q-radio')).filter(Boolean);
       if (radios.length === 0) radios = scope.filter(el => el.tagName === 'Q-RADIO' && el.getAttribute('value') === 'normal');
+      // 官方配送 이 '선택됨'으로 읽히는지 (확인된 잘못된 상태 판정용)
+      scope.filter(el => el.tagName === 'Q-RADIO' && el.getAttribute('value') === 'official').forEach(r => { if (isChecked(r)) report.officialSelected++; });
       radios.forEach(radio => {
         report.found++;
         if (isChecked(radio)) { report.selected++; return; }
@@ -3744,12 +3746,12 @@ async function selectMerchantDelivery(page) {
   let r = await scanMerchantDelivery(page, true);
   if (!r.present) {
     console.log('  [配送方式] 영역 없음 — 건너뜀');
-    return { present: false, found: 0, selected: 0, unselected: 0, ok: true, sample: '' };
+    return { present: false, found: 0, selected: 0, unselected: 0, officialSelected: 0, ok: true, wrong: false, sample: '' };
   }
   console.log(`  [配送方式] sections=${r.sections}, found=${r.found}, already=${r.selected}, clicked=${r.clicked}`);
   if (r.found === 0) {
     console.log(`  [配送方式] ! "${MERCHANT_DELIVERY_TEXT}" 라디오를 찾지 못함 — 구조 확인용 샘플: ${r.sample}`);
-    return { present: true, found: 0, selected: 0, unselected: 0, ok: false, unknownMarkup: true, sample: r.sample };
+    return { present: true, found: 0, selected: 0, unselected: 0, officialSelected: 0, ok: false, wrong: false, unknownMarkup: true, sample: r.sample };
   }
   if (r.clicked > 0) await page.waitForTimeout(800);
 
@@ -3771,9 +3773,11 @@ async function selectMerchantDelivery(page) {
     v = await scanMerchantDelivery(page, false);
   }
   const ok = v.found > 0 && v.unselected === 0;
-  console.log(`  [配送方式] 결과: found=${v.found}, selected=${v.selected}, unselected=${v.unselected} → ${ok ? 'OK' : 'FAIL'}`);
+  // wrong: 商家配送 미선택 블록이 있고 官方配送 이 선택된 것으로 읽힘 — 확인된 잘못된 상태 (이때만 중단)
+  const wrong = v.unselected > 0 && v.officialSelected > 0;
+  console.log(`  [配送方式] 결과: found=${v.found}, selected=${v.selected}, unselected=${v.unselected}, officialSelected=${v.officialSelected} → ${ok ? 'OK' : (wrong ? 'WRONG' : 'UNKNOWN')}`);
   if (!ok) console.log(`  [配送方式] 샘플: ${v.sample}`);
-  return { present: true, found: v.found, selected: v.selected, unselected: v.unselected, ok, sample: v.sample };
+  return { present: true, found: v.found, selected: v.selected, unselected: v.unselected, officialSelected: v.officialSelected, ok, wrong, sample: v.sample };
 }
 
 // ========================================

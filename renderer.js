@@ -4437,9 +4437,12 @@ async function inputRefCodesV2(opts = {}) {
       updateButtonSteps();
     }
     const unconf = result.unconfirmedBatches || [];
-    const unconfLine = unconf.length
+    const dwarn = result.deliveryWarnings || [];
+    const unconfLine = (unconf.length
       ? `\n\n⚠️ 제출은 눌렸으나 성공 화면을 확인하지 못한 묶음 ${unconf.length}회 (${unconf.reduce((s, b) => s + (b.count || 0), 0)}건)\n   → 이 건들은 '참조 완료'로 표시하지 않았습니다. 1688 주문 목록에서 실제 주문 여부를 확인하세요.`
-      : '';
+      : '') + (dwarn.length
+      ? `\n\n⚠️ 配送方式(商家配送) 선택을 확인하지 못하고 제출한 묶음 ${dwarn.length}회\n   → 1688 주문 목록에서 배송 방식이 商家配送 인지 확인하세요.`
+      : '');
 
     // 결과에 따른 안내
     if (result.stoppedByUser) {
@@ -4450,8 +4453,8 @@ async function inputRefCodesV2(opts = {}) {
     } else if (result.stoppedByDeliveryMethod) {
       const info = result.deliveryMethodInfo || {};
       alert(
-        `配送方式(배송 방식)에서 "商家配送" 선택을 확인할 수 없어 제출하지 않고 중단했습니다.\n\n` +
-        `선택지 ${info.found ?? '?'}개 중 미선택 ${info.unselected ?? '?'}개\n` +
+        `配送方式(배송 방식)에 "官方配送"이 선택된 것이 확인되어 제출하지 않고 중단했습니다.\n\n` +
+        `선택지 ${info.found ?? '?'}개 중 商家配送 미선택 ${info.unselected ?? '?'}개\n` +
         `처리 완료: ${result.successOrderIndexes.length}건 (${result.iterationCount}회 반복)\n\n` +
         `1688 주문확인 페이지에서 배송 방식을 商家配送 으로 직접 선택한 뒤 제출하거나, 다시 [V2 참조코드]를 실행하세요.`
       );
