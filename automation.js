@@ -1895,6 +1895,11 @@ function compareOrdersWithCart(orders, cartItems, onReviewProgress, opts = {}) {
 // 사이즈 매칭 체크 함수
 // 검수용 엄격한 사이즈 매칭 (정확히 일치, XL변환, FREE/均码만 허용)
 function checkSizeMatch(cartSize, orderSize) {
+  // (v1.0.80) 공백 정규화 — 1688 장바구니 표기는 공백이 여러 칸인 경우가 있다 (예: '上新.加绒    直筒牛仔裤').
+  //   checkColorMatch 와 같은 규칙. 리버스 검수에서 색상 값이 이 함수로 들어올 때 공백 차이로 '카트에 없음' 오판하던 문제.
+  cartSize = String(cartSize || '').replace(/\s+/g, ' ').trim();
+  orderSize = String(orderSize || '').replace(/\s+/g, ' ').trim();
+
   // 둘 다 비어있거나 사이즈가 없는 경우 - 매칭 성공 (색상만 있는 상품)
   if (!cartSize && !orderSize) {
     return { match: true, type: 'no-size' };
@@ -2072,7 +2077,7 @@ async function extractCartDataRaw(page) {
       let size = '';
 
       if (titleTextEl) {
-        const optionText = titleTextEl.textContent?.trim() || '';
+        const optionText = (titleTextEl.textContent || '').replace(/\s+/g, ' ').trim();   // (v1.0.80) 연속 공백 1칸으로
         if (optionText.includes(';')) {
           const parts = optionText.split(';').map(s => s.trim());
           color = parts[0] || '';
@@ -3982,4 +3987,4 @@ async function askInquiry(group) {
   }
 }
 
-module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery };
+module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery, compareOrdersWithCart, checkSizeMatch, checkColorMatch };
