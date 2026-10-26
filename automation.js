@@ -2724,9 +2724,12 @@ async function openLoginBrowser() {
 // - 빈 textarea 발생 시 제출하지 않고 즉시 중단
 // - shouldStop 플래그로 사용자 수동 중단 지원
 // ========================================
-async function inputRefCodesV2(groupedData, userCode) {
+async function inputRefCodesV2(groupedData, userCode, opts = {}) {
+  // opts.startFromConfirm: 이미 열려 있는 1688 주문확인 페이지에서 '메모 입력'부터 시작 (카트·결산 단계 건너뜀, 첫 묶음만)
+  //   로딩이 길어 중간에 멈췄을 때, 주문확인 페이지가 다 뜬 뒤 그 자리에서 이어가기 위한 용도. (v1.0.79)
+  const startFromConfirm = !!opts.startFromConfirm;
   console.log('\n========================================');
-  console.log('INPUT REF CODES V2 STARTED');
+  console.log(`INPUT REF CODES V2 STARTED${startFromConfirm ? ' (입력부터)' : ''}`);
   console.log(`Groups to process: ${Object.keys(groupedData).length}`);
   console.log(`User code: ${userCode}`);
   console.log('========================================');
@@ -2745,9 +2748,29 @@ async function inputRefCodesV2(groupedData, userCode) {
   const context = browser.contexts()[0];
   const pages = context.pages();
   let page = pages[pages.length - 1];
+  if (startFromConfirm) {
+    // 주문확인 페이지가 열린 탭을 찾는다 (여러 개면 마지막 탭)
+    const confirmPages = pages.filter(p => ORDER_CONFIRM_URL_RE.test(p.url()));
+    if (confirmPages.length === 0) {
+      console.log('X 입력부터: 주문확인 페이지가 열린 탭 없음');
+      return {
+        success: true, successGroups: [], successOrderIndexes: [],
+        emptyTextareaCount: 0, totalTextareas: 0, emptySellerNames: [],
+        failedOrderIndexes: [], iterationCount: 0,
+        stoppedByUser: false, stoppedByEmptyTextarea: false,
+        stoppedByDeliveryMethod: false, deliveryMethodInfo: null,
+        normalEnd: false, unconfirmedBatches: [],
+        exitReason: '1688 주문확인 페이지(smart_make_order)가 열려 있지 않음 — [V2 참조코드]로 처음부터 실행하세요'
+      };
+    }
+    page = confirmPages[confirmPages.length - 1];
+    try { await page.bringToFront(); } catch (_) {}
+    console.log(`+ 입력부터: 주문확인 페이지에서 시작 (${page.url()})`);
+  }
 
   // ── 누적 변수 초기화 ──
   shouldStop = false;
+  let skipToConfirm = startFromConfirm;   // 첫 묶음만 카트·결산 단계를 건너뛴다
   const successGroups = [];
   const successOrderIndexes = [];
   const failedOrderIndexes = [];
@@ -2777,6 +2800,29 @@ async function inputRefCodesV2(groupedData, userCode) {
       console.log(`ITERATION ${iterationCount}`);
       console.log('='.repeat(50));
       checkShouldStop();
+
+      if (skipToConfirm) {
+        // ── 입력부터: 이미 열린 주문확인 페이지에서 시작 — 주문 블록이 그려질 때까지 최대 180초 대기 ──
+        skipToConfirm = false;
+        console.log('\nSection 2~4 skipped (입력부터) — waiting for order blocks on the open confirmation page...');
+        const waitStart = Date.now();
+        let ready = false, lastLog = 0;
+        while (Date.now() - waitStart < 180000) {
+          checkShouldStop();
+          if (!ORDER_CONFIRM_URL_RE.test(page.url())) break;
+          const cnt = await page.locator('.order-inner').count().catch(() => 0);
+          if (cnt > 0) { ready = true; console.log(`+ Order blocks ready (${cnt}, ${Math.round((Date.now() - waitStart) / 1000)}s)`); break; }
+          if (Date.now() - lastLog >= 10000) { lastLog = Date.now(); console.log(`  ... waiting (${Math.round((Date.now() - waitStart) / 1000)}s)`); }
+          await page.waitForTimeout(1000);
+        }
+        if (!ready) {
+          exitReason = ORDER_CONFIRM_URL_RE.test(page.url())
+            ? '주문확인 페이지가 180초 안에 그려지지 않음'
+            : `주문확인 페이지가 아님 (${page.url()})`;
+          console.log(`  X ${exitReason}`);
+          break;
+        }
+      } else {
 
       // ── Section 2: 카트 페이지 접속 + 로딩 대기 ──
       // 이전 제출의 리다이렉트(order_success.htm)와 충돌 방지: 최대 3회 재시도 + URL 검증
@@ -2889,6 +2935,8 @@ async function inputRefCodesV2(groupedData, userCode) {
         console.log(`  X ${exitReason}`);
         break;
       }
+      } // ← if (skipToConfirm) … else { Section 2~4 } 끝
+
       // 고정 2초 대기 → 조건 대기 (2026-10-25): 모든 주문 블록에 메모 textarea 가 렌더링될 때까지
       //   (.order-inner 수 == textarea 수, 500ms 간격 2회 연속 동일). 최대 60초(v1.0.78, 대량 주문 대응), 미충족 시 그대로 진행.
       {

@@ -89,11 +89,11 @@ function applyOrderUnlockState() {
 // 중단 버튼(btnStop, btnStopV2)은 작업 진행 상태에 따라 자체 제어되므로
 // user_code 그룹 가시성 토글 대상에서 분리
 const USER_CODE_BUTTON_VISIBILITY = {
-  HI: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  MB: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  BR: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
-  BO: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  HI: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnRefCodeV2From', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  MB: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnRefCodeV2From', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  BZ: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnRefCodeV2From', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  BR: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnRefCodeV2From', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
+  BO: ['btnRangeSelect', 'btnRangeDeselect', 'btnSkip', 'btnStart', 'btnReview', 'btnRefCodeV2', 'btnRefCodeV2From', 'btnOrderNumber', 'btnSaveV2', 'btnDeductV2', 'btnExportFailV2'],
 };
 
 // 우측 패널의 모든 버튼 ID (가시성 계산용)
@@ -102,7 +102,7 @@ const USER_CODE_BUTTON_VISIBILITY = {
 const ALL_RP_ORDER_BUTTONS = [
   'btnRangeSelect', 'btnRangeDeselect',
   'btnSkip', 'btnStart', 'btnReview',
-  'btnRefCode', 'btnRefCodeV2',
+  'btnRefCode', 'btnRefCodeV2', 'btnRefCodeV2From',
   'btnOrderNumber', 'btnSaveV2',
   'btnDeductV2',
   'btnExportSuccess', 'btnExportFail', 'btnExportFailV2'
@@ -4320,7 +4320,15 @@ async function inputRefCodes() {
 }
 
 // ========== 참조코드 입력 V2 (카트 → 결산 → 참조코드 → 주소 선택 전체 워크플로우) ==========
-async function inputRefCodesV2() {
+async function inputRefCodesV2(opts = {}) {
+  // opts.fromConfirm: [V2 참조코드 (입력부터)] — 이미 열린 1688 주문확인 페이지에서 메모 입력부터 시작
+  const fromConfirm = !!(opts && opts.fromConfirm);
+  if (fromConfirm && !confirm(
+    `V2 참조코드 (입력부터)\n\n` +
+    `자동화 크롬에 1688 주문확인 페이지(결산 후 화면)가 열려 있어야 합니다.\n` +
+    `그 페이지에서 카트·결산 단계를 건너뛰고 메모 입력 → 주소 → 배송방식 → 제출 순서로 이어서 진행합니다.\n` +
+    `첫 묶음 제출 뒤 장바구니에 남은 상품은 평소처럼 이어서 처리합니다.\n\n진행할까요?`
+  )) return;
   // ── ft_users 유저 선택 확인 및 user_code 추출 ──
   const ftUserSelect = document.getElementById('ftUserSelect');
   if (!ftUserSelect || !ftUserSelect.value) {
@@ -4399,11 +4407,14 @@ async function inputRefCodesV2() {
 
   // userCode를 groupedData에 내장 (V1과 동일한 단일 객체 전달 패턴)
   groupedData._userCode = userCode;
+  if (fromConfirm) groupedData._startFromConfirm = true;
 
   // ── 버튼 상태: 진행 중 ──
   // - V2 참조코드 버튼은 그대로 보이되 중복 클릭 방지 위해 disabled
   // - V2 중단 버튼은 disabled 해제 → 빨강 활성
   document.getElementById('btnRefCodeV2').disabled = true;
+  const btnFrom = document.getElementById('btnRefCodeV2From');
+  if (btnFrom) btnFrom.disabled = true;
   document.getElementById('btnStopV2').disabled = false;
 
   // ── 자동화 실행 ──
@@ -4463,6 +4474,8 @@ async function inputRefCodesV2() {
   } finally {
     // 버튼 상태 복원: V2 참조코드 다시 활성, V2 중단은 회색(비활성)으로
     document.getElementById('btnRefCodeV2').disabled = false;
+    const btnFromEnd = document.getElementById('btnRefCodeV2From');
+    if (btnFromEnd) btnFromEnd.disabled = false;
     document.getElementById('btnStopV2').disabled = true;
   }
 }

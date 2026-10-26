@@ -211,8 +211,10 @@ ipcMain.handle('input-ref-codes', async (event, groupedCodes) => {
 ipcMain.handle('input-ref-codes-v2', async (event, groupedCodes) => {
   const { inputRefCodesV2 } = require('./automation');
   const userCode = groupedCodes._userCode || '';
+  const startFromConfirm = !!groupedCodes._startFromConfirm;   // [V2 참조코드 (입력부터)]
   delete groupedCodes._userCode;
-  return await inputRefCodesV2(groupedCodes, userCode);
+  delete groupedCodes._startFromConfirm;
+  return await inputRefCodesV2(groupedCodes, userCode, { startFromConfirm });
 });
 
 // 로그인 설정용 브라우저 열기 IPC
