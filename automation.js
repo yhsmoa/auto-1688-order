@@ -2890,11 +2890,11 @@ async function inputRefCodesV2(groupedData, userCode) {
         break;
       }
       // 고정 2초 대기 → 조건 대기 (2026-10-25): 모든 주문 블록에 메모 textarea 가 렌더링될 때까지
-      //   (.order-inner 수 == textarea 수, 500ms 간격 2회 연속 동일). 최대 6초, 미충족 시 그대로 진행.
+      //   (.order-inner 수 == textarea 수, 500ms 간격 2회 연속 동일). 최대 60초(v1.0.78, 대량 주문 대응), 미충족 시 그대로 진행.
       {
         const readyStart = Date.now();
         let prev = null, stable = 0;
-        while (Date.now() - readyStart < 6000) {
+        while (Date.now() - readyStart < 60000) {
           checkShouldStop();
           await page.waitForTimeout(500);
           const st = await page.evaluate(() => ({
@@ -3303,13 +3303,28 @@ async function clickSettleAndWaitConfirm(page, settleSel, maxAttempts = 3) {
     console.log(`+ 结算 button clicked (attempt ${attempt}/${maxAttempts})`);
 
     const start = Date.now();
-    while (Date.now() - start < 20000) {
+    while (Date.now() - start < 45000) {              // 주소가 바뀔 때까지 최대 45초 (느린 PC·대량 주문 대응)
       checkShouldStop();
       await page.waitForTimeout(500);
       if (ORDER_CONFIRM_URL_RE.test(page.url())) {
-        const loaded = await page.waitForSelector('.order-inner', { timeout: 15000 }).then(() => true).catch(() => false);
-        if (loaded) { console.log(`+ Order confirmation page loaded (attempt ${attempt})`); return { ok: true, attempts: attempt }; }
-        message = '주문확인 페이지에 주문 블록이 나타나지 않음';
+        // 주소는 넘어왔다 → 페이지가 그려질 때까지 기다린다. 대량 주문(수백 건)은 1분 이상 걸릴 수 있으므로
+        // 최대 180초, 10초마다 진행 로그. 로딩 중인 페이지를 '안 넘어감'으로 판정하지 않는다. (v1.0.78)
+        const renderStart = Date.now();
+        let lastLog = 0;
+        while (Date.now() - renderStart < 180000) {
+          checkShouldStop();
+          const cnt = await page.locator('.order-inner').count().catch(() => 0);
+          if (cnt > 0) {
+            console.log(`+ Order confirmation page loaded (attempt ${attempt}, ${Math.round((Date.now() - renderStart) / 1000)}s, ${cnt} order block(s))`);
+            return { ok: true, attempts: attempt };
+          }
+          if (Date.now() - lastLog >= 10000) {
+            lastLog = Date.now();
+            console.log(`  ... waiting for order blocks to render (${Math.round((Date.now() - renderStart) / 1000)}s) url=${page.url()}`);
+          }
+          await page.waitForTimeout(1000);
+        }
+        message = (await readPageNotice(page)) || '주문확인 페이지가 180초 안에 그려지지 않음';
         return { ok: false, attempts: attempt, message };   // 이미 카트를 떠났으므로 재클릭 불가
       }
     }
