@@ -2757,6 +2757,10 @@ async function inputRefCodesV2(groupedData, userCode) {
   let iterationCount = 0;
   let stoppedByEmptyTextarea = false;
   let stoppedByDeliveryMethod = false;   // 配送方式 → 商家配送 선택 실패로 제출 전 중단
+  // (2026-10-26) 정상 종료(장바구니에 남은 상점 없음)만 '완료'. 그 외 break 는 모두 중단으로 보고한다.
+  let normalEnd = false;
+  let unconfirmedStreak = 0;             // 제출은 반영됐으나 성공 페이지 미확인 — 연속 횟수
+  const unconfirmedBatches = [];         // 성공 미확인 배치 기록 (보고용, 성공 처리 안 함)
   let deliveryMethodInfo = null;
   let exitReason = '';  // 루프 종료 사유 추적
 
@@ -2836,6 +2840,7 @@ async function inputRefCodesV2(groupedData, userCode) {
       const shopCount = await page.locator(shopSelector).count();
       if (shopCount === 0) {
         exitReason = '장바구니에 남은 상점 없음 (정상 종료)';
+        normalEnd = true;
         console.log(`+ ${exitReason}`);
         break;
       }
@@ -2875,26 +2880,14 @@ async function inputRefCodesV2(groupedData, userCode) {
         break;
       }
 
-      const submitBtn = page.locator(settleBtnSelector).first();
-      await submitBtn.click();
-      console.log('+ 结算 button clicked (after loading complete)');
-
-      console.log('  Waiting for order confirmation page...');
-      try {
-        await withStopCheck(() => page.waitForURL('**/order/confirm*', { timeout: 30000 }));
-        console.log('+ URL changed to order confirmation page');
-      } catch (e) {
-        if (e.message === 'STOPPED_BY_USER') throw e;
-        console.log('  Warning: URL pattern not matched, waiting for page elements...');
-      }
-
-      try {
-        await withStopCheck(() => page.waitForSelector('.order-inner', { timeout: 15000 }));
-        console.log('+ Order inner elements loaded');
-      } catch (e) {
-        if (e.message === 'STOPPED_BY_USER') throw e;
-        console.log('  Warning: .order-inner not found, trying alternative...');
-        await page.waitForTimeout(5000);
+      // (2026-10-26) 结算 클릭 → 주문확인 페이지로 '실제로 넘어갔는지' 확인. 안 넘어가면 최대 3회 재시도, 끝내 실패하면 중단.
+      //   이전: URL 패턴('**/order/confirm*')이 실제 주소(smart_make_order.htm)와 달라 항상 대기 실패 → 경고만 찍고 진행 →
+      //         카트 페이지에 머문 채 뒤 단계가 빈손으로 지나가다 '완료'로 끝나던 문제.
+      const settleNav = await clickSettleAndWaitConfirm(page, settleBtnSelector, 3);
+      if (!settleNav.ok) {
+        exitReason = `结算 클릭 후 주문확인 페이지로 넘어가지 않음 (${settleNav.attempts}회 시도)${settleNav.message ? ' — ' + settleNav.message : ''}`;
+        console.log(`  X ${exitReason}`);
+        break;
       }
       // 고정 2초 대기 → 조건 대기 (2026-10-25): 모든 주문 블록에 메모 textarea 가 렌더링될 때까지
       //   (.order-inner 수 == textarea 수, 500ms 간격 2회 연속 동일). 최대 6초, 미충족 시 그대로 진행.
@@ -2922,6 +2915,11 @@ async function inputRefCodesV2(groupedData, userCode) {
       const orderInners = page.locator('.order-inner');
       const orderCount = await orderInners.count();
       console.log(`  Found ${orderCount} order(s) on page`);
+      if (orderCount === 0) {
+        exitReason = '주문확인 페이지에서 주문 블록을 찾지 못함';
+        console.log(`  X ${exitReason}`);
+        break;
+      }
 
       // ── Phase 1: 1회 page.evaluate()로 모든 주문/상품/옵션 데이터 수집 ──
       // (기존: 주문×상품×옵션 수만큼 브라우저 왕복 → 신규: 1회 왕복)
@@ -3171,34 +3169,29 @@ async function inputRefCodesV2(groupedData, userCode) {
         }
       }
 
-      const submitOrderBtn = page.locator(submitBtnSelector).last();
-      await submitOrderBtn.click();
-      console.log('  + Submit order button clicked');
-
-      // ── Section 6.6: 제출 완료 대기 ──
-      // 성공/결제 페이지 URL 감지 (최대 40초) → 미감지 시 루프 계속 (장바구니로 복귀)
+      // ── Section 6.6: 제출 클릭 반영 확인 + 완료 대기 (2026-10-26) ──
+      //   반영 신호(버튼 loading/disabled 전환·버튼 사라짐·URL 변경)가 8초 안에 없으면 '클릭 미반영' → 제출하지 않은 것으로 보고 중단.
+      //   이중 주문 위험이 있어 제출 버튼은 자동 재클릭하지 않는다. (다시 실행하면 장바구니에 남은 상품부터 이어서 처리)
+      //   반영됐는데 40초 안에 성공 페이지를 못 보면 '미확인' 으로 기록(성공 처리 안 함) 후 장바구니로 돌아가 계속, 연속 2회면 중단.
       console.log('  Waiting for submission to complete...');
-      let submissionDetected = false;
-      for (let waitSec = 0; waitSec < 40; waitSec++) {
-        await page.waitForTimeout(1000);
-        checkShouldStop();
-        const currentUrl = page.url();
-        if (
-          currentUrl.includes('order_success') ||
-          currentUrl.includes('make_order_success') ||
-          currentUrl.includes('batch-cashier') ||
-          currentUrl.includes('cashierOrderNo')
-        ) {
-          console.log(`  + Submission success page detected (${waitSec + 1}s): ${currentUrl}`);
-          submissionDetected = true;
+      const submitOutcome = await clickSubmitAndConfirm(page, submitBtnSelector);
+      if (submitOutcome.status === 'not_registered') {
+        exitReason = `提交订单 클릭이 반영되지 않아 제출되지 않음${submitOutcome.message ? ' — ' + submitOutcome.message : ''}`;
+        console.log(`  X ${exitReason}`);
+        break;
+      }
+      if (submitOutcome.status !== 'success') {
+        unconfirmedStreak++;
+        unconfirmedBatches.push({ iteration: iterationCount, count: currentBatchIndexes.length, status: submitOutcome.status, url: submitOutcome.url, message: submitOutcome.message || '' });
+        console.log(`  ! 제출 후 성공 페이지 미확인 (${submitOutcome.status}, url=${submitOutcome.url}) - 이번 배치(${currentBatchIndexes.length}건) 성공 처리 안 함 (연속 ${unconfirmedStreak}회)`);
+        if (unconfirmedStreak >= 2) {
+          exitReason = `제출 후 성공 페이지 확인 실패가 연속 ${unconfirmedStreak}회 — 1688 주문 목록에서 직접 확인 필요`;
           break;
         }
-      }
-      if (!submissionDetected) {
-        // 미감지 → 이번 배치 성공 처리 안 함, 루프 계속 (장바구니로 돌아가 다음 배치 처리)
-        console.log(`  ! 주문 성공 URL 미감지 (40초) - 이번 배치(${currentBatchIndexes.length}건) 성공 처리 안 함, 루프 계속`);
         continue;
       }
+      unconfirmedStreak = 0;
+      console.log(`  + Submission success page detected: ${submitOutcome.url}`);
 
       // 제출 확인 완료 → 이번 배치를 success 리스트에 병합
       currentBatchIndexes.forEach(idx => successOrderIndexes.push(idx));
@@ -3233,6 +3226,7 @@ async function inputRefCodesV2(groupedData, userCode) {
       failedOrderIndexes, iterationCount,
       stoppedByUser: false, stoppedByEmptyTextarea,
       stoppedByDeliveryMethod, deliveryMethodInfo,
+      normalEnd, unconfirmedBatches,
       exitReason
     };
 
@@ -3245,6 +3239,7 @@ async function inputRefCodesV2(groupedData, userCode) {
         failedOrderIndexes, iterationCount,
         stoppedByUser: true, stoppedByEmptyTextarea: false,
         stoppedByDeliveryMethod: false, deliveryMethodInfo,
+        normalEnd: false, unconfirmedBatches,
         exitReason: '사용자 중지'
       };
     }
@@ -3266,6 +3261,128 @@ async function inputRefCodesV2(groupedData, userCode) {
 // - 이미 targetCount 이상이면 즉시 반환
 // - 연속 stableChecks 회 동안 증가 없으면 종료 (더 이상 없음)
 // ========================================
+// ========================================
+// (2026-10-26) 결산/제출 클릭 검증 헬퍼
+// ========================================
+const ORDER_CONFIRM_URL_RE  = /order\.1688\.com\/order\/(smart_make_order|confirm)/i;
+const SUBMIT_SUCCESS_URL_RE = /order_success|make_order_success|batch-cashier|cashierOrderNo|cashier\./i;
+
+// 화면에 떠 있는 안내/오류 문구를 읽는다 (원인 보고용, 판정에는 쓰지 않음)
+async function readPageNotice(page) {
+  return await page.evaluate(() => {
+    const sels = ['.next-dialog', '.next-message', '[class*="toast"]', '[class*="Toast"]', '[role="alert"]', '[role="dialog"]', '.ant-modal', '.ant-message', 'q-message', 'q-toast'];
+    const texts = [];
+    sels.forEach(sel => document.querySelectorAll(sel).forEach(el => {
+      const st = getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden') return;
+      const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t && t.length <= 300 && !texts.includes(t)) texts.push(t);
+    }));
+    return texts.slice(0, 3).join(' / ');
+  }).catch(() => '');
+}
+
+// 结算 클릭 → 주문확인 페이지 진입 확인. 결산은 돈이 나가지 않으므로 이동이 없으면 재클릭(최대 maxAttempts).
+async function clickSettleAndWaitConfirm(page, settleSel, maxAttempts = 3) {
+  let message = '';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    checkShouldStop();
+    // 가격 재계산 중 클릭 방지: 0.5초 간격 2회 연속 '활성' 일 때만 클릭 (최대 10초)
+    let stable = 0;
+    for (let i = 0; i < 20 && stable < 2; i++) {
+      await page.waitForTimeout(500);
+      const en = await page.locator(settleSel).first()
+        .evaluate(el => !(el.disabled || el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true'))
+        .catch(() => false);
+      stable = en ? stable + 1 : 0;
+    }
+    if (stable < 2) { message = '结算 버튼이 활성화되지 않음'; console.log(`  ! ${message} (attempt ${attempt})`); continue; }
+
+    await page.locator(settleSel).first().click({ timeout: 10000 })
+      .catch(e => { message = 'click error: ' + String(e.message).split('\n')[0]; });
+    console.log(`+ 结算 button clicked (attempt ${attempt}/${maxAttempts})`);
+
+    const start = Date.now();
+    while (Date.now() - start < 20000) {
+      checkShouldStop();
+      await page.waitForTimeout(500);
+      if (ORDER_CONFIRM_URL_RE.test(page.url())) {
+        const loaded = await page.waitForSelector('.order-inner', { timeout: 15000 }).then(() => true).catch(() => false);
+        if (loaded) { console.log(`+ Order confirmation page loaded (attempt ${attempt})`); return { ok: true, attempts: attempt }; }
+        message = '주문확인 페이지에 주문 블록이 나타나지 않음';
+        return { ok: false, attempts: attempt, message };   // 이미 카트를 떠났으므로 재클릭 불가
+      }
+    }
+    const notice = await readPageNotice(page);
+    if (notice) message = notice;
+    console.log(`  ! 结算 후 주문확인 페이지로 이동하지 않음 (attempt ${attempt}) url=${page.url()} notice="${notice}"`);
+  }
+  return { ok: false, attempts: maxAttempts, message };
+}
+
+// 提交订单 클릭 → 반영 확인 → 성공 페이지 대기.
+//   반환 status: 'success' | 'not_registered'(클릭 미반영, 제출 안 됨) | 'stuck'(반영됐으나 같은 페이지) | 'left_unknown'(다른 페이지로 이동했으나 성공 패턴 아님)
+//   제출 버튼은 이중 주문 위험 때문에 자동 재클릭하지 않는다.
+async function clickSubmitAndConfirm(page, submitSel) {
+  const startUrl = page.url();
+  // 클릭 직후의 짧은 loading 전환도 놓치지 않도록 MutationObserver 를 먼저 건다
+  await page.evaluate((sel) => {
+    window.__submitSignal = { loading: false, gone: false };
+    const btns = [...document.querySelectorAll(sel)];
+    const target = btns[btns.length - 1];
+    if (!target) return;
+    const mark = () => {
+      if (target.getAttribute('loading') === 'true' || target.getAttribute('disabled') === 'true') window.__submitSignal.loading = true;
+      if (!document.contains(target)) window.__submitSignal.gone = true;
+    };
+    const mo = new MutationObserver(mark);
+    mo.observe(target, { attributes: true });
+    mo.observe(document.body, { childList: true, subtree: true });
+    window.__submitMO = mo;
+  }, submitSel).catch(() => {});
+
+  let message = '';
+  await page.locator(submitSel).last().click({ timeout: 10000 })
+    .catch(e => { message = 'click error: ' + String(e.message).split('\n')[0]; });
+  console.log('  + Submit order button clicked');
+
+  const readSignal = () => page.evaluate(() => window.__submitSignal || null).catch(() => null);
+  const cleanup = () => page.evaluate(() => { try { window.__submitMO && window.__submitMO.disconnect(); } catch (_) {} }).catch(() => {});
+
+  // 1) 8초 안에 반영 신호 확인
+  let registered = false;
+  for (let t = 0; t < 16; t++) {
+    await page.waitForTimeout(500);
+    checkShouldStop();
+    const url = page.url();
+    if (SUBMIT_SUCCESS_URL_RE.test(url)) { await cleanup(); return { status: 'success', url }; }
+    if (url !== startUrl) { registered = true; break; }
+    const sig = await readSignal();
+    if (sig && (sig.loading || sig.gone)) { registered = true; break; }
+  }
+  if (!registered) {
+    const stillThere = await page.locator(submitSel).count().catch(() => 0);
+    if (stillThere > 0 && page.url() === startUrl) {
+      message = (await readPageNotice(page)) || message;
+      await cleanup();
+      return { status: 'not_registered', url: page.url(), message };
+    }
+    registered = true;   // 버튼이 사라졌거나 상태가 바뀜 → 반영된 것으로 보고 대기
+  }
+
+  // 2) 반영됨 → 성공 페이지 대기 (최대 40초)
+  for (let t = 0; t < 80; t++) {
+    const url = page.url();
+    if (SUBMIT_SUCCESS_URL_RE.test(url)) { await cleanup(); return { status: 'success', url }; }
+    await page.waitForTimeout(500);
+    checkShouldStop();
+  }
+  const finalUrl = page.url();
+  message = (await readPageNotice(page)) || message;
+  await cleanup();
+  return { status: finalUrl === startUrl ? 'stuck' : 'left_unknown', url: finalUrl, message };
+}
+
 async function scrollUntilShopCount(page, targetCount, maxMs = 60000) {
   const shopSelector = '[class*="shop-container--container"]';
   const initial = await page.locator(shopSelector).count();

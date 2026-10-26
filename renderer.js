@@ -1836,7 +1836,7 @@ function renderOrderList() {
     const reasonText = order.reason || order.otherNote || '-';
 
     // 참조코드 텍스트 생성 (새 형식: 주문코드 | 주문번호날짜부분 | 주문번호뒷부분:수량)
-    const orderNo = order.orderNo || '';
+    const orderNo = baseItemNo(order);   // (2026-10-26) 주문번호 등록 후 '\n1688번호' 가 붙어도 품번만 사용
     const orderNoParts = orderNo.split('-');
     const orderNoDatePart = orderNoParts.slice(0, 2).join('-');
     const orderNoRestPart = orderNoParts.slice(2).join('-');
@@ -2360,6 +2360,8 @@ window.api.onProgress((progress) => {
 
 // 주문번호 등록용 데이터 저장
 let orderNumberData = [];
+let orderNumberSheet = null;       // (2026-10-26) { rows, merges, fileName } — 품번 단위 매칭용
+let orderNumberLastRun = null;     // 마지막 주문번호 등록 결과 (배너·다운로드용)
 
 // 주문번호 등록 - 엑셀 파일 업로드
 function registerOrderNumbers() {
@@ -2390,6 +2392,12 @@ function handleOrderNumberFile(event) {
       // 첫 번째 시트 읽기
       const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
       const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+      // (2026-10-26) 품번 단위 매칭용 원본 보관 (A열 병합 = 1688 주문 단위, AD열 메모의 품번)
+      orderNumberSheet = {
+        rows: XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '', blankrows: false }),
+        merges: firstSheet['!merges'] || [],
+        fileName: file.name,
+      };
 
       console.log('전체 행 수 (헤더 포함):', jsonData.length);
       console.log('첫 3행 샘플:', jsonData.slice(0, 3));
@@ -2448,154 +2456,229 @@ function handleOrderNumberFile(event) {
   };
 
   reader.readAsArrayBuffer(file);
+  // 같은 파일을 다시 선택해도 change 이벤트가 나도록 초기화
+  try { event.target.value = ''; } catch (_) {}
 }
 
-// 주문번호 저장 - offer_id로 매칭하여 주문번호 열에 추가
+// ════════════════════════════════════════════════════════════
+// 주문번호 등록 (2026-10-26 개편) — 품번 단위 매칭 + 결과 모달 + 테이블 위 배너
+//
+//  매칭 대상: '성공' 행만 (V2 저장·차감과 같은 기준). 실패 행은 건드리지 않는다.
+//  1순위 품번: 엑셀 AD열 메모 "코드 | BO-261026 | 0255-A01:15" 에서 품번을 복원해 정확히 매칭
+//  2순위 상품(offer_id): 메모에 품번이 없는 1688 주문, 또는 메모 품번 중 현재 주문 품번이 있는 1688 주문만 후보.
+//        후보가 1개면 등록, 2개 이상이면 '자동 등록 보류'(잘못된 번호가 붙는 것보다 안전)
+//  여러 번 실행해도 안전: 표시용 orderNo 는 '품번\n1688번호' 로 다시 만들고, 이번 엑셀에 없는 행의 이전 값은 유지.
+//  배송비 배분: 이번 엑셀에 있는 1688 주문에 대해서만, 그 번호가 붙은 성공 행끼리 수량 비례 (실패 행 제외).
+// ════════════════════════════════════════════════════════════
 function saveOrderNumbers() {
-  console.log('=== 주문번호 저장 시작 ===');
-
-  if (orderNumberData.length === 0) {
-    console.log('⚠️ 엑셀 데이터 없음');
+  if (!orderNumberSheet || orderNumberData.length === 0) {
     alert('먼저 엑셀 파일을 업로드해주세요.');
     return;
   }
-
   if (orders.length === 0) {
-    console.log('⚠️ 주문 데이터 없음');
     alert('주문 데이터가 없습니다. 먼저 데이터를 정리해주세요.');
     return;
   }
 
-  console.log(`주문 데이터: ${orders.length}개`);
-  console.log(`엑셀 데이터: ${orderNumberData.length}개`);
+  const { rows, merges } = orderNumberSheet;
+  const I = DeductParser._internal;
+  const groups = I.groupBy1688Order(rows, merges);
+  const feeOf = (g) => I.round2(I.toNum(I.getMergedValue(g.rowIdx[0], DeductParser.COL.G_DELIVERY, rows, merges)));
 
-  let matchCount = 0;
-  const matchedExcelOfferIds = new Set(); // 매칭된 엑셀 데이터 추적
+  // 품번 → 1688 주문 (같은 품번이 두 1688 주문 메모에 있으면 중복으로 표시)
+  const byItem = new Map();
+  const dupItem = new Set();
+  groups.forEach(g => g.items.forEach(it => {
+    if (byItem.has(it.itemNo) && byItem.get(it.itemNo) !== g) dupItem.add(it.itemNo);
+    else byItem.set(it.itemNo, g);
+  }));
 
-  // 각 주문의 offer_id를 추출하여 매칭
-  orders.forEach((order, idx) => {
-    const match = order.url.match(/offer\/(\d+)\.html/);
-    const offerId = match ? match[1] : '';
+  const successIdx = [];
+  orders.forEach((o, i) => { if (isDeductSuccessOrder(o)) successIdx.push(i); });
+  const sessionItemSet = new Set(successIdx.map(i => baseItemNo(orders[i])));
 
-    if (!offerId) {
-      console.log(`주문 ${idx}: offer_id 추출 실패 (URL: ${order.url})`);
-      order.matched = false;
+  // offer 폴백 후보: 메모 품번이 없거나, 메모 품번 중 현재 주문 품번이 있는 1688 주문
+  const offerCands = new Map();
+  groups.forEach(g => {
+    const eligible = g.items.length === 0 || g.items.some(it => sessionItemSet.has(it.itemNo));
+    if (!eligible) return;
+    g.offerIds.forEach(o => {
+      if (!offerCands.has(o)) offerCands.set(o, new Set());
+      offerCands.get(o).add(g);
+    });
+  });
+
+  const run = {
+    fileName: orderNumberSheet.fileName || '',
+    success: successIdx.length, byItem: 0, byOffer: 0,
+    missing: [], ambiguous: [], keptPrev: [],
+    excelOrders: groups.length, extraOrders: 0,
+  };
+  const offerOf = (o) => { const m = (o.url || '').match(/offer\/(\d+)\.html/); return m ? m[1] : ''; };
+  const applyNo = (o, no) => {
+    o.orderNo = baseItemNo(o) + '\n' + no;
+    if (!o.dbData) o.dbData = {};
+    o.dbData['1688_order_id'] = no;
+    o.matched = true;
+  };
+
+  successIdx.forEach(i => {
+    const o = orders[i];
+    const itemNo = baseItemNo(o);
+    let g = null, method = '', amb = null;
+    if (dupItem.has(itemNo)) {
+      amb = { reason: '같은 품번이 여러 1688 주문 메모에 있음', candidates: groups.filter(x => x.items.some(it => it.itemNo === itemNo)).map(x => x.orderNo1688) };
+    } else if (byItem.has(itemNo)) {
+      g = byItem.get(itemNo); method = 'item';
+    } else {
+      const offerId = offerOf(o);
+      const c = offerId ? [...(offerCands.get(offerId) || [])] : [];
+      if (c.length === 1) { g = c[0]; method = 'offer'; }
+      else if (c.length > 1) amb = { reason: '같은 상품이 여러 1688 주문에 있어 자동 등록 보류', candidates: c.map(x => x.orderNo1688) };
+    }
+
+    if (g) {
+      applyNo(o, g.orderNo1688);
+      if (method === 'item') run.byItem++; else run.byOffer++;
       return;
     }
-
-    // 해당 offer_id와 매칭되는 주문번호 찾기 (첫 번째만)
-    const matchingData = orderNumberData.find(data => data.offerId === offerId);
-
-    if (matchingData) {
-      // 매칭 성공
-      order.matched = true;
-      const orderNumber = matchingData.orderNumber;
-
-      console.log(`주문 ${idx}: ✓ 매칭 성공 (offer_id: ${offerId}) → 1688 주문번호: ${orderNumber}`);
-
-      // 엑셀 데이터를 매칭됨으로 표시
-      matchedExcelOfferIds.add(`${matchingData.offerId}_${matchingData.orderNumber}`);
-
-      // 기존 주문번호 마지막 줄에 1688 주문번호 추가
-      order.orderNo = order.orderNo + '\n' + orderNumber;
-      matchCount++;
-
-      // dbData에 1688 주문번호 저장
-      if (order.dbData) {
-        order.dbData['1688_order_id'] = orderNumber;
-      }
+    const prev = o.dbData && o.dbData['1688_order_id'];
+    if (amb) {
+      run.ambiguous.push({ i, ...amb, prev: prev || '' });
+      o.matched = false;              // 이전 값이 있어도 이번에 확정 못 했으므로 확인 필요 표시
+    } else if (prev) {
+      run.keptPrev.push({ i, prev });  // 이번 엑셀에 없음 — 이전에 등록된 값 유지
     } else {
-      // 매칭 실패
-      order.matched = false;
-      console.log(`주문 ${idx}: ✗ 매칭 실패 (offer_id: ${offerId})`);
-
-      // 디버깅: 엑셀에 해당 offer_id가 있는지 확인
-      const allOfferIds = orderNumberData.map(d => d.offerId);
-      const uniqueOfferIds = [...new Set(allOfferIds)];
-      console.log(`  엑셀에 있는 고유 offer_id 개수: ${uniqueOfferIds.length}`);
-      console.log(`  엑셀에 "${offerId}" 존재 여부:`, allOfferIds.includes(offerId));
-
-      // 비슷한 offer_id 찾기
-      const similar = orderNumberData.filter(d =>
-        d.offerId.includes(offerId.substring(0, 8)) || offerId.includes(d.offerId.substring(0, 8))
-      );
-      if (similar.length > 0) {
-        console.log(`  비슷한 offer_id 발견:`, similar.map(s => s.offerId));
-      }
+      run.missing.push({ i });
+      o.matched = false;
     }
   });
 
-  // 매칭되지 않은 엑셀 데이터 찾기
-  unmatchedExcelData = orderNumberData.filter(data => {
-    const key = `${data.offerId}_${data.orderNumber}`;
-    return !matchedExcelOfferIds.has(key);
-  });
-
-  console.log(`\n=== 매칭 결과 요약 ===`);
-  console.log(`✓ 매칭 성공: ${matchCount}개`);
-  console.log(`✗ 매칭되지 않은 엑셀 데이터: ${unmatchedExcelData.length}개`);
-
-  if (unmatchedExcelData.length > 0) {
-    console.log('\n매칭되지 않은 엑셀 데이터 목록:');
-    unmatchedExcelData.forEach((data, idx) => {
-      console.log(`  ${idx + 1}. offer_id: ${data.offerId}, 주문번호: ${data.orderNumber}`);
+  // 배송비 비례 배분 — 이번 엑셀의 1688 주문만, 성공 행끼리
+  const usedNos = new Set();
+  groups.forEach(g => {
+    const members = successIdx.filter(i => orders[i].dbData && orders[i].dbData['1688_order_id'] === g.orderNo1688);
+    if (members.length === 0) return;
+    usedNos.add(g.orderNo1688);
+    const totalQty = members.reduce((s, i) => s + (Number(orders[i].quantity) || 0), 0);
+    const fee = feeOf(g);
+    members.forEach(i => {
+      const q = Number(orders[i].quantity) || 0;
+      orders[i].dbData.price_delivery_cny = totalQty > 0 ? Math.round((q / totalQty) * fee * 100) / 100 : 0;
     });
-  }
-
-  // ─── 배송비(price_delivery_cny) 비례 배분 ───────────────────────────────
-  // 동일 주문번호 내 모든 아이템의 수량 합계를 구한 뒤
-  // 각 아이템에 (item_qty / total_qty) * delivery_fee 를 배분
-  console.log('\n=== 배송비 비례 배분 시작 ===');
-
-  // 1) 주문번호별 매칭된 orders 인덱스 그룹화
-  const orderNoGroupMap = new Map(); // orderNumber → [{orderIdx, quantity}]
-  orders.forEach((order, idx) => {
-    const orderNumber = order.dbData && order.dbData['1688_order_id'];
-    if (!orderNumber) return;
-    if (!orderNoGroupMap.has(orderNumber)) orderNoGroupMap.set(orderNumber, []);
-    orderNoGroupMap.get(orderNumber).push({ orderIdx: idx, quantity: order.quantity || 0 });
-  });
-
-  // 2) 주문번호별 배송비 조회 (엑셀 데이터 기준, 첫 번째 매칭 행의 값 사용)
-  const deliveryFeeByOrderNo = new Map();
-  orderNumberData.forEach(data => {
-    if (!deliveryFeeByOrderNo.has(data.orderNumber)) {
-      deliveryFeeByOrderNo.set(data.orderNumber, data.deliveryFee || 0);
+    // 행별 반올림 오차를 수량이 가장 많은 행에서 맞춰 합계 = 1688 주문 운임 (예: 200.04 → 200.00)
+    if (totalQty > 0) {
+      const sum = members.reduce((s, i) => s + orders[i].dbData.price_delivery_cny, 0);
+      const diff = Math.round((fee - sum) * 100) / 100;
+      if (diff !== 0) {
+        const top = members.reduce((a, b) => (Number(orders[b].quantity) || 0) > (Number(orders[a].quantity) || 0) ? b : a);
+        orders[top].dbData.price_delivery_cny = Math.round((orders[top].dbData.price_delivery_cny + diff) * 100) / 100;
+      }
     }
   });
+  run.extraOrders = groups.filter(g => !usedNos.has(g.orderNo1688)).length;
 
-  // 3) 각 주문에 비례 배송비 저장
-  orderNoGroupMap.forEach((items, orderNumber) => {
-    const totalShipping = deliveryFeeByOrderNo.get(orderNumber) || 0;
-    const totalQty = items.reduce((sum, item) => sum + item.quantity, 0);
+  // 테이블 하단 '매칭되지 않은 엑셀 데이터' (기존 표시 유지)
+  unmatchedExcelData = orderNumberData.filter(d => !usedNos.has(d.orderNumber));
 
-    console.log(`  주문번호 ${orderNumber}: 배송비=${totalShipping}CNY, 총수량=${totalQty}, 아이템=${items.length}개`);
-
-    items.forEach(({ orderIdx, quantity }) => {
-      const fee = totalQty > 0
-        ? Math.round((quantity / totalQty) * totalShipping * 100) / 100
-        : 0;
-      if (orders[orderIdx].dbData) {
-        orders[orderIdx].dbData.price_delivery_cny = fee;
-      }
-      console.log(`    아이템 ${orderIdx}: qty=${quantity}, price_delivery_cny=${fee}`);
-    });
-  });
-
-  console.log('=== 배송비 비례 배분 완료 ===\n');
-  // ────────────────────────────────────────────────────────────────────────
+  orderNumberLastRun = run;
+  console.log('=== 주문번호 등록 결과 ===', run);
 
   renderOrderList();
-
-  // 버튼 상태 업데이트
-  stepStatus.orderNumber = true;
-  updateButtonSteps();
-
-  let message = `${matchCount}개의 주문에 주문번호가 추가되었습니다.`;
-  if (unmatchedExcelData.length > 0) {
-    message += `\n\n⚠️ ${unmatchedExcelData.length}개의 엑셀 데이터가 매칭되지 않았습니다. 테이블 하단을 확인해주세요.`;
+  if (run.byItem + run.byOffer > 0) {
+    stepStatus.orderNumber = true;
+    updateButtonSteps();
   }
-  alert(message);
+  refreshOrderNumberBanner();
+  showOrderNumberResultModal(run);
+}
+
+// 현재 상태 기준 '주문번호 확인 필요' 목록 — 성공 행 중 1688 번호가 없거나, 마지막 등록에서 보류된 행
+function collectOrderNumberProblems() {
+  const amb = new Map((orderNumberLastRun?.ambiguous || []).map(a => [a.i, a]));
+  const list = [];
+  orders.forEach((o, i) => {
+    if (!isDeductSuccessOrder(o)) return;
+    const has = !!(o.dbData && o.dbData['1688_order_id']);
+    if (amb.has(i) && o.matched !== true) list.push({ i, reason: amb.get(i).reason, candidates: amb.get(i).candidates });
+    else if (!has) list.push({ i, reason: '엑셀에서 찾지 못함', candidates: [] });
+  });
+  return list;
+}
+
+// 테이블 바로 위 배너 — 놓치지 않도록 문제가 남아 있는 동안 계속 표시
+function refreshOrderNumberBanner() {
+  const box = document.getElementById('orderNumberBanner');
+  if (!box || !orderNumberLastRun) return;
+  const problems = collectOrderNumberProblems();
+  if (problems.length === 0) {
+    box.className = 'review-extras ok';
+    box.innerHTML = `✅ 주문번호 등록 완료 — 성공 ${orderNumberLastRun.success}건 모두 1688 주문번호가 있습니다.`;
+    box.style.display = '';
+    clearTimeout(box._t);
+    box._t = setTimeout(() => { box.style.display = 'none'; }, 6000);
+    return;
+  }
+  clearTimeout(box._t);
+  const nMissing = problems.filter(p => p.reason === '엑셀에서 찾지 못함').length;
+  const nAmb = problems.length - nMissing;
+  box.className = 'review-extras warn';
+  box.innerHTML = `
+    <div class="rx-head">⚠️ 주문번호 미등록 <b>${problems.length}건</b>
+      (엑셀에 없음 ${nMissing}건${nAmb ? ` · 자동 등록 보류 ${nAmb}건` : ''})
+      <button type="button" class="dm-link" onclick="downloadOrderNumberProblems()">목록 다운로드</button>
+      <span class="rx-hint">이 건들은 V2 저장 시 1688 주문번호가 비고, 차감 확인에서도 '엑셀에 없음'으로 나옵니다. 맞는 엑셀로 다시 등록하거나 [매칭] 칸을 눌러 직접 입력하세요.</span>
+    </div>`;
+  box.style.display = '';
+}
+
+function showOrderNumberResultModal(run) {
+  const modal = document.getElementById('orderNumberResultModal');
+  const body = document.getElementById('orderNumberResultBody');
+  const problems = collectOrderNumberProblems();
+  const matched = run.byItem + run.byOffer;
+  if (!modal || !body) {
+    alert(`주문번호 등록: 성공 ${run.success}건 중 ${matched}건 등록, 미등록 ${problems.length}건`);
+    return;
+  }
+  const allOk = problems.length === 0;
+  const nMissing = run.missing.length, nAmb = run.ambiguous.length;
+  body.innerHTML = `
+    <div class="dm-head">
+      <div>📄 ${String(run.fileName).replace(/[<>&]/g, '')}</div>
+      <div class="dm-sub">엑셀 1688 주문 ${run.excelOrders}건</div>
+    </div>
+    <div class="dm-section">
+      <div class="dm-row ${allOk ? 'dm-ok' : 'dm-warn'}">${allOk ? '✅' : '⚠️'} 주문 성공 <b>${run.success}</b>건 / 엑셀 일치 <b>${matched}</b>건
+        <div class="dm-sub">품번으로 확인 ${run.byItem}건${run.byOffer ? ` · 상품(offer)으로 확인 ${run.byOffer}건` : ''}</div></div>
+      <div class="dm-row ${nMissing ? 'dm-warn' : 'dm-muted'}">${nMissing ? '❌' : '✅'} 주문 성공인데 엑셀에 없음 <b>${nMissing}</b>건</div>
+      ${nAmb ? `<div class="dm-row dm-warn">⚠️ 같은 상품이 여러 1688 주문에 있어 자동 등록 보류 <b>${nAmb}</b>건<div class="dm-sub">[매칭] 칸을 눌러 직접 입력하세요.</div></div>` : ''}
+      ${run.keptPrev.length ? `<div class="dm-row dm-muted">ℹ️ 이번 엑셀에 없지만 이전 등록값 유지 <b>${run.keptPrev.length}</b>건</div>` : ''}
+      <div class="dm-row dm-muted">ℹ️ 주문건에는 없으나 엑셀에 있음 <b>${run.extraOrders}</b>건 (다른 주문의 1688 주문, 무시)</div>
+      ${problems.length ? `<div class="dm-row"><button type="button" class="dm-link" onclick="downloadOrderNumberProblems()">미등록 ${problems.length}건 목록 다운로드</button></div>` : ''}
+    </div>
+    ${problems.length ? `<div class="dm-section dm-warn">⛔ 미등록 건은 처리되지 않았습니다. 주문 목록 위 배너에도 계속 표시됩니다.</div>` : ''}`;
+  modal.style.display = 'flex';
+}
+function closeOrderNumberResultModal() {
+  const modal = document.getElementById('orderNumberResultModal');
+  if (modal) modal.style.display = 'none';
+}
+function downloadOrderNumberProblems() {
+  const problems = collectOrderNumberProblems();
+  if (!problems.length) { alert('미등록 건이 없습니다.'); return; }
+  const rows = [['주문번호(품번)', '상품명', '옵션', '수량', 'offer_id', '사유', '후보 1688 주문번호']];
+  problems.forEach(p => {
+    const o = orders[p.i];
+    const m = (o.url || '').match(/offer\/(\d+)\.html/);
+    rows.push([baseItemNo(o), o.dbData?.item_name || '', o.dbData?.option_name || '', o.quantity ?? '', m ? m[1] : '', p.reason, (p.candidates || []).join(', ')]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 22 }, { wch: 40 }, { wch: 24 }, { wch: 6 }, { wch: 16 }, { wch: 34 }, { wch: 44 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '주문번호 미등록');
+  const code = (orders.find(o => o.orderCode)?.orderCode) || 'orders';
+  XLSX.writeFile(wb, `주문번호미등록_${code}.xlsx`);
 }
 
 
@@ -2633,6 +2716,7 @@ function openOrderNumberInput(event, index) {
     }
     closeOrderNumberPopover();
     renderOrderList();
+    refreshOrderNumberBanner();
   }
 
   input.addEventListener('keydown', (e) => {
@@ -2693,6 +2777,11 @@ function isOrderFailed(order) {
   if (hasResult && !hasReview) return !resultTrue;
   if (!hasResult && hasReview) return !reviewTrue;
   return false;
+}
+
+// 표시용 orderNo 의 첫 줄(품번). 주문번호 등록 시 orderNo = '품번\n1688주문번호' 로 바뀌므로 메모·대조에는 이 값을 쓴다.
+function baseItemNo(order) {
+  return String((order && order.orderNo) || '').split('\n')[0].trim();
 }
 
 function itemNoOf(order) {
@@ -4157,7 +4246,7 @@ async function inputRefCodes() {
 
     // 참조코드 형식 변경: 주문코드 | 주문번호날짜부분 | 주문번호뒷부분:수량
     // 예: ORBO260125-Q21 | BO-260125 | 0037-A01:10
-    const orderNo = order.orderNo || '';
+    const orderNo = baseItemNo(order);   // (2026-10-26) 주문번호 등록 후 '\n1688번호' 가 붙어도 품번만 사용
     const orderNoParts = orderNo.split('-');
     // 첫 두 부분: 사업자코드-날짜 (예: BO-260125)
     const orderNoDatePart = orderNoParts.slice(0, 2).join('-');
@@ -4271,7 +4360,7 @@ async function inputRefCodesV2() {
       };
     }
 
-    const orderNo = order.orderNo || '';
+    const orderNo = baseItemNo(order);   // (2026-10-26) 주문번호 등록 후 '\n1688번호' 가 붙어도 품번만 사용
     const orderNoParts = orderNo.split('-');
     const orderNoDatePart = orderNoParts.slice(0, 2).join('-');
     const orderNoRestPart = orderNoParts.slice(2).join('-');
@@ -4322,8 +4411,15 @@ async function inputRefCodesV2() {
     }
 
     renderOrderList();
-    stepStatus.refCode = true;
-    updateButtonSteps();
+    // (2026-10-26) 정상 종료일 때만 참조코드 단계를 완료로 표시
+    if (result.normalEnd) {
+      stepStatus.refCode = true;
+      updateButtonSteps();
+    }
+    const unconf = result.unconfirmedBatches || [];
+    const unconfLine = unconf.length
+      ? `\n\n⚠️ 제출은 눌렸으나 성공 화면을 확인하지 못한 묶음 ${unconf.length}회 (${unconf.reduce((s, b) => s + (b.count || 0), 0)}건)\n   → 이 건들은 '참조 완료'로 표시하지 않았습니다. 1688 주문 목록에서 실제 주문 여부를 확인하세요.`
+      : '';
 
     // 결과에 따른 안내
     if (result.stoppedByUser) {
@@ -4339,9 +4435,19 @@ async function inputRefCodesV2() {
         `처리 완료: ${result.successOrderIndexes.length}건 (${result.iterationCount}회 반복)\n\n` +
         `1688 주문확인 페이지에서 배송 방식을 商家配送 으로 직접 선택한 뒤 제출하거나, 다시 [V2 참조코드]를 실행하세요.`
       );
+    } else if (result.normalEnd) {
+      alert(
+        `✅ V2 참조코드 완료\n\n` +
+        `처리: ${result.successOrderIndexes.length}건 (${result.iterationCount}회 반복)\n` +
+        `장바구니에 남은 상점 없음` + unconfLine
+      );
     } else {
-      const reasonText = result.exitReason ? `\n종료 사유: ${result.exitReason}` : '';
-      alert(`V2 참조코드 입력 완료!\n처리: ${result.successOrderIndexes.length}건 (${result.iterationCount}회 반복)${reasonText}`);
+      alert(
+        `⛔ V2 참조코드가 중간에 멈췄습니다 (완료 아님)\n\n` +
+        `사유: ${result.exitReason || '알 수 없음'}\n` +
+        `처리 완료: ${result.successOrderIndexes.length}건 (${result.iterationCount}회 반복)\n\n` +
+        `장바구니에 남은 상품은 아직 주문되지 않았습니다.\n원인을 확인한 뒤 [V2 참조코드]를 다시 실행하면 남은 상품부터 이어서 처리합니다.` + unconfLine
+      );
     }
   } catch (error) {
     alert('V2 참조코드 입력 중 오류가 발생했습니다: ' + error.message);
