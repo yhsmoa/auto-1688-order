@@ -1155,7 +1155,8 @@ function reconstructOrderFromCartItem(it, ctx) {
       status_cancel: null,
       status_export: null,
       korea_note: it.note_kr || null,
-      china_note: it.req_note || null,    // req_note → R열 매핑 (가정)
+      china_note: it.req_note || null,    // req_note → R열 매핑 (가정) — 기존 호환용, note_cn 으로 저장
+      req_note: it.req_note || null,      // (2026-10-26) 요청사항 원본 → V2 저장 시 note_notice(웹 '공유비고') 로 저장
       order_code: orderNo,                // → ft_order_items.order_no / ft_orders.order_no
       shipment_code: null,
       option_id: it.vendor_option_id || null,
@@ -1891,10 +1892,16 @@ function renderOrderList() {
       setBadgeHtml = `<span class="set-badge set-badge-click" title="${escAttr(tip)}" onclick="event.stopPropagation(); searchByValue('${productNo}')">${label}</span> `;
     }
 
+    // (2026-10-26) 요청사항(req_note) 이 있으면 📝 배지 + 마우스 올리면 내용
+    const reqNote = String(order.dbData?.req_note || '').trim();
+    const reqNoteBadgeHtml = reqNote
+      ? `<span class="req-note-badge" title="요청사항: ${reqNote.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}">📝 ${reqNote.length > 14 ? reqNote.slice(0, 14).replace(/</g, '&lt;') + '…' : reqNote.replace(/</g, '&lt;')}</span> `
+      : '';
+
     let orderNoCellContent = `
-      ${(itemLabel || isSet) ? `
+      ${(itemLabel || isSet || reqNote) ? `
       <div class="cell-item-label" title="${itemLabel.replace(/"/g, '&quot;')}">
-        ${setBadgeHtml}${itemLabel}
+        ${setBadgeHtml}${reqNoteBadgeHtml}${itemLabel}
       </div>` : ''}
       <div style="display:flex; align-items:center; gap:4px;">
         <span class="cell-clickable"
@@ -4130,7 +4137,9 @@ async function exportFailedOrdersV2() {
         img_url: db.img_url || null,                                 // K col
         site_url: db.site_url || null,                               // L col
         note: db.korea_note || null,                                 // Q col
-        fail_reason: db.china_note || order.reason || null,          // R col (비고란)
+        // R col (비고란). (2026-10-26) 카트 출처 행은 china_note 가 요청사항(req_note)이라 실패 사유로 쓰면 안 된다
+        //   → 실제 취소 사유(order.reason) 만 사용. 시트 입력 행은 기존 순서(R열 우선) 유지.
+        fail_reason: (db._cartId ? (order.reason || null) : (db.china_note || order.reason || null)),
         order_no: db.order_code || null,                             // S col
         option_id: db.option_id || null,                             // U col
         shipment_info: db.coupang_shipment_size || null,             // V col
@@ -5155,6 +5164,9 @@ async function saveToSupabaseV2() {
         site_url: db.site_url || null,
         note_kr: db.korea_note || null,
         note_cn: db.china_note || null,
+        // (2026-10-26) 요청사항(ft_cart_items.req_note) → note_notice. 웹 주문 화면은 '공유비고'(note_notice)를 표시·중국어 번역한다.
+        //   이전에는 note_cn 에만 저장돼 웹 주문 화면에서 보이지 않았다. (웹의 카트→주문 변환도 req_note → note_notice)
+        note_notice: db.req_note || null,
         composition: db.composition || null,
         recommanded_age: db.recomanded_age || null,
         set_total: db.set_total || null,
