@@ -1177,7 +1177,13 @@ function reconstructOrderFromCartItem(it, ctx) {
 
 // ─── 드롭박스 채우기 ───────────────────────────────────────────
 // 【V2 주문 탭 전용】 선택된 사용자의 ft_carts.status='ORDER' 행들을 드롭박스에 노출.
-//  옵션 value = ft_carts.id, 라벨 = cart_name + 아이템 건수.
+//  옵션 value = ft_carts.id, 라벨 = 생성시각 + cart_name + 아이템 건수.
+//  (v1.0.82) 생성일자(created_at, 한국시간) 별로 <optgroup> 묶음 — 같은 이름의 카트도 날짜로 구분된다.
+//  옵션 value/dataset 은 그대로라 [추가]/[삭제]/[반려] 동작은 변하지 않는다.
+const CART_DATE_FMT = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' });
+const CART_TIME_FMT = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false });
+const CART_WDAY_FMT = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', weekday: 'short' });
+
 async function loadFtCartsDropdown() {
   const sel = document.getElementById('ftOrderSelectV2');
   if (!sel) return;
@@ -1231,13 +1237,28 @@ async function loadFtCartsDropdown() {
   }
 
   sel.innerHTML = '<option value="">선택...</option>';
+  // 생성일자(한국시간) 별 묶음 — data 가 created_at 내림차순이므로 날짜 그룹도 최신 날짜가 위
+  const groups = new Map();   // 'YYYY-MM-DD' | '' → { label, rows: [{ row, time }] }
   data.forEach(row => {
-    const itemCount = countMap.get(row.id) ?? 0;
-    const opt = document.createElement('option');
-    opt.value = row.id;
-    opt.dataset.cartName = row.cart_name || '';
-    opt.textContent = `${row.cart_name || '(이름 없음)'} (${itemCount}건)`;
-    sel.appendChild(opt);
+    const d = row.created_at ? new Date(row.created_at) : null;
+    const valid = d && !isNaN(d.getTime());
+    const key = valid ? CART_DATE_FMT.format(d) : '';
+    if (!groups.has(key)) groups.set(key, { label: valid ? `${key} (${CART_WDAY_FMT.format(d)})` : '날짜 없음', rows: [] });
+    groups.get(key).rows.push({ row, time: valid ? CART_TIME_FMT.format(d) : '' });
+  });
+  groups.forEach(g => {
+    const totalItems = g.rows.reduce((sum, { row }) => sum + (countMap.get(row.id) ?? 0), 0);
+    const og = document.createElement('optgroup');
+    og.label = `📅 ${g.label} — 카트 ${g.rows.length}개 · ${totalItems}건`;
+    g.rows.forEach(({ row, time }) => {
+      const itemCount = countMap.get(row.id) ?? 0;
+      const opt = document.createElement('option');
+      opt.value = row.id;
+      opt.dataset.cartName = row.cart_name || '';
+      opt.textContent = `${time ? time + '  ' : ''}${row.cart_name || '(이름 없음)'} (${itemCount}건)`;
+      og.appendChild(opt);
+    });
+    sel.appendChild(og);
   });
 
   // 선택 시: [추가]/[삭제] 버튼 활성화 토글. 잠금 상태면 disabled 유지.
