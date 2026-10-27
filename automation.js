@@ -2731,6 +2731,31 @@ async function openLoginBrowser() {
 // - 빈 textarea 발생 시 제출하지 않고 즉시 중단
 // - shouldStop 플래그로 사용자 수동 중단 지원
 // ========================================
+// ========================================
+// 주문확인 페이지 메모 textarea 읽기 (v1.0.83)
+//  메모칸(textarea)은 q-textarea 컴포넌트의 shadow DOM 안에 있어 document.querySelectorAll 로는 0개로 보인다.
+//  (v1.0.69 에서 검사를 page.evaluate 로 바꾸면서 ① 준비 대기가 끝나지 않고(v1.0.78~80: 매 묶음 60초 공회전)
+//   ② 빈 메모 검사·입력값 검증이 아무것도 못 보는 상태였음)
+//  → fill 과 같은 선택자를 Playwright 로케이터로 잡는다(open shadow DOM 투과, v1.0.68 이전 방식과 같은 대상).
+//    소속 .order-inner / .order-group-container 는 shadow 경계를 넘어 부모를 거슬러 올라가 1회에 계산.
+//  반환: [{ inner, group, value }] (inner/group = 문서 순서 인덱스, 못 찾으면 -1) / 읽기 실패 시 null
+// ========================================
+const MEMO_TEXTAREA_SEL = '.order-footer .leave-message-container .q-textarea textarea';
+
+async function readMemoTextareas(page) {
+  return await page.locator(MEMO_TEXTAREA_SEL).evaluateAll(els => {
+    const up = n => n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+    const closest = (el, cls) => { for (let n = el; n; n = up(n)) if (n.classList && n.classList.contains(cls)) return n; return null; };
+    const inners = [...document.querySelectorAll('.order-inner')];
+    const groups = [...document.querySelectorAll('.order-group-container')];
+    return els.map(el => ({
+      inner: inners.indexOf(closest(el, 'order-inner')),
+      group: groups.indexOf(closest(el, 'order-group-container')),
+      value: el.value || ''
+    }));
+  }).catch(() => null);
+}
+
 async function inputRefCodesV2(groupedData, userCode, opts = {}) {
   // opts.startFromConfirm: 이미 열려 있는 1688 주문확인 페이지에서 '메모 입력'부터 시작 (카트·결산 단계 건너뜀, 첫 묶음만)
   //   로딩이 길어 중간에 멈췄을 때, 주문확인 페이지가 다 뜬 뒤 그 자리에서 이어가기 위한 용도. (v1.0.79)
@@ -2945,23 +2970,26 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
       }
       } // ← if (skipToConfirm) … else { Section 2~4 } 끝
 
-      // 고정 2초 대기 → 조건 대기 (2026-10-25): 모든 주문 블록에 메모 textarea 가 렌더링될 때까지
-      //   (.order-inner 수 == textarea 수, 500ms 간격 2회 연속 동일). 최대 60초(v1.0.78, 대량 주문 대응), 미충족 시 그대로 진행.
+      // 조건 대기: 모든 주문 블록에 메모 textarea 가 렌더링될 때까지 (500ms 간격).
+      //   (v1.0.83) textarea 는 shadow DOM 안 → readMemoTextareas(로케이터 투과)로 센다. 예전엔 항상 0개로 보여
+      //   조건이 영원히 안 맞아 매 묶음 60초를 그냥 기다렸다(v1.0.78~80).
+      //   · 블록 수 == 메모칸 있는 블록 수 (1회 재확인) → 바로 진행
+      //   · 메모칸 없는 블록이 있을 수 있으므로, 수가 5초간 그대로면 경고 후 진행 / 최대 60초
       {
         const readyStart = Date.now();
-        let prev = null, stable = 0;
+        let prev = null, stableSince = Date.now();
         while (Date.now() - readyStart < 60000) {
           checkShouldStop();
           await page.waitForTimeout(500);
-          const st = await page.evaluate(() => ({
-            inners: document.querySelectorAll('.order-inner').length,
-            tas: document.querySelectorAll('.order-inner .order-footer .leave-message-container .q-textarea textarea').length
-          })).catch(() => null);
-          if (st && prev && st.inners === prev.inners && st.tas === prev.tas) stable++; else stable = 0;
+          const inners = await page.locator('.order-inner').count().catch(() => 0);
+          const list = await readMemoTextareas(page);
+          const tas = list ? new Set(list.filter(t => t.inner >= 0).map(t => t.inner)).size : 0;
+          const st = { inners, tas };
+          const same = !!prev && prev.inners === st.inners && prev.tas === st.tas;
+          if (!same) stableSince = Date.now();
           prev = st;
-          if (st && st.inners > 0 && st.tas === st.inners && stable >= 1) break;
-          // (v1.0.81) 메모칸이 없는 주문 블록이 있으면 수가 영원히 같아지지 않는다 → 수가 2회 연속 안정되면 진행 (60초 공회전 방지)
-          if (st && st.inners > 0 && stable >= 2) { console.log(`  ! textarea ${st.tas}/${st.inners} — 수가 안정되어 진행`); break; }
+          if (st.inners > 0 && st.tas === st.inners && same) break;
+          if (st.inners > 0 && Date.now() - stableSince >= 5000) { console.log(`  ! textarea ${st.tas}/${st.inners} — 5초간 변화 없어 진행`); break; }
         }
         console.log(`+ Order confirmation page ready (${Date.now() - readyStart}ms, orders=${prev?.inners}, textareas=${prev?.tas})`);
       }
@@ -3114,7 +3142,7 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
       for (const [orderIdx, memoText] of textareaMap) {
         checkShouldStop();
         const orderInner = orderInners.nth(orderIdx);
-        const textarea = orderInner.locator('.order-footer .leave-message-container .q-textarea textarea').first();
+        const textarea = orderInner.locator(MEMO_TEXTAREA_SEL).first();
 
         if (await textarea.count() === 0) {
           console.log(`  Order ${orderIdx + 1}: X Textarea not found`);
@@ -3131,29 +3159,35 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
 
       // (2026-10-25) 주문마다 2~3회 왕복하던 검사 → 1회 evaluate 로 판매자명/메모값/offerId 를 모두 읽는다.
       //   같은 결과로 ① 빈 textarea 판정 ② Phase 3 입력값 검증(memoText 와 일치) 을 함께 수행.
-      const groupStates = await page.evaluate(() => {
+      //   (v1.0.83) 메모 textarea 는 shadow DOM 안이라 document.querySelector 로는 못 찾았다 → 빈 메모 검사가
+      //   사실상 꺼져 있었음. 메모값은 readMemoTextareas(로케이터 투과)로 읽어 블록별로 붙인다 (v1.0.68 이전과 같은 대상).
+      const memoList = await readMemoTextareas(page);
+      if (!memoList) console.log('  ! 메모칸 읽기 실패 — 빈 메모 검사를 건너뜀');
+      const memoByGroup = new Map(), memoByInner = new Map();   // 블록마다 첫 번째 메모칸 (.first() 와 동일)
+      (memoList || []).forEach(t => {
+        if (t.group >= 0 && !memoByGroup.has(t.group)) memoByGroup.set(t.group, t.value);
+        if (t.inner >= 0 && !memoByInner.has(t.inner)) memoByInner.set(t.inner, t.value);
+      });
+      const groupStates = (await page.evaluate(() => {
         return [...document.querySelectorAll('.order-group-container')].map(g => {
           const shopLink = g.querySelector('.order-group-header .shop-title .shop-link');
-          const ta = g.querySelector('.order-footer .leave-message-container .q-textarea textarea');
           const offerIds = [...g.querySelectorAll('.offer-container a[href*="offer/"]')]
             .map(a => (a.getAttribute('href') || '').match(/offer\/(\d+)\.html/))
             .filter(Boolean).map(m => m[1]);
           return {
             sellerName: shopLink ? (shopLink.textContent || '').trim() : 'Unknown Seller',
-            hasTextarea: !!ta,
-            value: ta ? ta.value : null,
             offerIds: [...new Set(offerIds)]
           };
         });
-      });
+      })).map((st, i) => ({ ...st, hasTextarea: memoByGroup.has(i), value: memoByGroup.has(i) ? memoByGroup.get(i) : null }));
       totalTextareas = groupStates.length;
 
-      // Phase 3 입력값 검증 (order-inner 순서 == order-group-container 순서 가정, 기존 로직과 동일한 전제)
+      // Phase 3 입력값 검증 — 같은 .order-inner 안의 메모칸 값과 비교 (블록 순서 가정 없음)
       for (const [orderIdx, memoText] of textareaMap) {
-        const st = groupStates[orderIdx];
-        if (!st || !st.hasTextarea) { console.log(`  Order ${orderIdx + 1}: ! textarea not found at verify`); continue; }
-        if (st.value === memoText) console.log(`  Order ${orderIdx + 1}: + Input OK (${memoText.length} chars)`);
-        else console.log(`  Order ${orderIdx + 1}: ! Mismatch (expected: ${memoText.length}, got: ${(st.value || '').length})`);
+        if (!memoByInner.has(orderIdx)) { console.log(`  Order ${orderIdx + 1}: ! textarea not found at verify`); continue; }
+        const got = memoByInner.get(orderIdx);
+        if (got === memoText) console.log(`  Order ${orderIdx + 1}: + Input OK (${memoText.length} chars)`);
+        else console.log(`  Order ${orderIdx + 1}: ! Mismatch (expected: ${memoText.length}, got: ${(got || '').length})`);
       }
 
       groupStates.forEach((st, orderIdx) => {
@@ -3991,4 +4025,4 @@ async function askInquiry(group) {
   }
 }
 
-module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery, compareOrdersWithCart, checkSizeMatch, checkColorMatch };
+module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery, compareOrdersWithCart, checkSizeMatch, checkColorMatch, readMemoTextareas, MEMO_TEXTAREA_SEL };

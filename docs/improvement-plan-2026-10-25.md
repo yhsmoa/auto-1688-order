@@ -342,3 +342,13 @@ automation.js `processGroupOrder` 수량 입력 직후:
 
 - V2 주문 탭 [장바구니 불러오기] 드롭박스를 ft_carts.created_at(한국시간) 날짜별 <optgroup> 으로 묶음: "📅 YYYY-MM-DD (요일) — 카트 N개 · M건".
 - 각 카트 앞에 생성 시각(HH:mm) 표시. 옵션 value/dataset 은 그대로라 [추가]/[삭제]/[반려] 동작 불변.
+
+## 16. V2 참조코드 느림 원인 수정 (2026-10-27, v1.0.83)
+
+- 원인(10-26 실측 로그): 주문확인 페이지가 뜬 뒤 주소 선택까지 17건 묶음 87초, 2건 묶음 63초 — 매 묶음 약 60초 공회전.
+- 메모 textarea 는 q-textarea 의 shadow DOM 안 → document.querySelectorAll 로 항상 0개. v1.0.69 에서 검사를 page.evaluate 로 바꾼 뒤
+  ① 준비 대기 조건(블록 수 == 메모칸 수)이 영원히 안 맞아 v1.0.78~80 은 매 묶음 60초 최대치까지 대기
+  ② Section 5.5 빈 메모 검사·입력값 검증이 아무것도 못 보는 상태(빈 메모여도 제출).
+- 수정: readMemoTextareas() — fill 과 같은 선택자를 Playwright 로케이터(open shadow DOM 투과)로 잡고 소속 블록을 1회 evaluateAll 로 계산.
+  준비 대기·입력값 검증·빈 메모 검사에 사용. 빈 메모 검사는 v1.0.68 이전 동작으로 복귀(빈 메모가 있으면 제출 전 중단).
+- 테스트: test/memoShadow.test.js (실제 Chrome, shadow 구조 2종 + 이중 shadow + 메모칸 없는 블록).
