@@ -352,3 +352,14 @@ automation.js `processGroupOrder` 수량 입력 직후:
 - 수정: readMemoTextareas() — fill 과 같은 선택자를 Playwright 로케이터(open shadow DOM 투과)로 잡고 소속 블록을 1회 evaluateAll 로 계산.
   준비 대기·입력값 검증·빈 메모 검사에 사용. 빈 메모 검사는 v1.0.68 이전 동작으로 복귀(빈 메모가 있으면 제출 전 중단).
 - 테스트: test/memoShadow.test.js (실제 Chrome, shadow 구조 2종 + 이중 shadow + 메모칸 없는 블록).
+
+## 17. 제출 버튼 30초 대기 실패 수정 + 무반응 재클릭 (2026-10-27, v1.0.84)
+
+- 원인(실제 페이지 확인): 주문확인 페이지에 立即下单 버튼이 2개 — 본문 아래(commit-card, 숨김 0x0)와 오른쪽 패널(page-aside, 보임).
+  waitForSelector 는 첫 번째 일치 요소만 보이는지 확인 → 첫 번째가 숨겨진 배치에서 30초 내내 실패 ("제출 버튼 활성화 대기 실패").
+  클릭도 .last() 고정이라 배치가 반대면 숨겨진 버튼을 눌러 반응이 없었음.
+- 수정: findSubmitButton() — data-tracker=btn-submit-order + :visible + disabled/loading=false 인 버튼만. 대기·클릭 모두 사용.
+- 제출 전마다(첫 클릭 포함) 메모 확인: 모든 메모가 계산값과 같아야 클릭. 틀린 칸은 다시 입력 후 재확인, 그래도 틀리거나 빈 칸/메모칸 없음이면 누르지 않고 멈춤.
+- 클릭 후 30초 동안 성공 페이지로 안 넘어가고 주문확인 페이지에 버튼이 보이고 활성이면 → 메모 확인 → 다시 클릭 (최대 3회, 전체 120초).
+  버튼이 로딩/비활성/사라짐이면 처리 중일 수 있어 다시 누르지 않음.
+- 테스트: test/submitButton.test.js (가짜 1688 페이지, 11개). 실제 열린 주문확인 페이지에서 버튼·메모칸 탐지 확인(클릭 없음).

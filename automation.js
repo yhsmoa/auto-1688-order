@@ -3242,17 +3242,15 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
       console.log('\nSection 6.5: Waiting for submit button to be ready...');
       checkShouldStop();
 
-      // 提交订单 버튼: <q-button type="primary" disabled="false" loading="false">
-      const submitBtnSelector = 'q-button[type="primary"][disabled="false"][loading="false"]';
-      try {
-        await withStopCheck(() => page.waitForSelector(submitBtnSelector, { state: 'visible', timeout: 30000 }));
-        console.log('  + Submit button is ready (visible & enabled)');
-      } catch (e) {
-        if (e.message === 'STOPPED_BY_USER') throw e;
-        exitReason = '제출 버튼 활성화 대기 실패 (30초)';
-        console.log(`  X ${exitReason}: ${e.message}`);
+      // 提交订单 버튼: <q-button data-tracker="btn-submit-order" type="primary" disabled="false" loading="false">
+      //   (v1.0.84) 같은 버튼이 2개(하나는 숨김)라 '보이는' 버튼만 찾는다 — findSubmitButton 참고.
+      if (!(await waitSubmitButtonReady(page, 30000))) {
+        const notice = await readPageNotice(page);
+        exitReason = `제출 버튼 활성화 대기 실패 (30초)${notice ? ' — ' + notice : ''}`;
+        console.log(`  X ${exitReason}`);
         break;
       }
+      console.log('  + Submit button is ready (visible & enabled)');
 
       // 제출 직전 재확인: 가격 재계산 등으로 配送方式 이 되돌아갔으면 다시 선택 (선택지가 있던 경우만)
       if (deliveryMethodInfo.present && deliveryMethodInfo.found > 0) {
@@ -3278,7 +3276,42 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
       // (v1.0.81) v1.0.77 의 '8초 안에 반응 없으면 제출 안 된 것으로 중단' 판정을 제거 — 실제 페이지에서 그 신호가 안 잡혀
       //   정상 클릭도 중단시켰다. 예전 방식으로 복귀: 클릭 → 성공 페이지 최대 40초 대기 → 못 보면 성공 처리 없이 장바구니로 돌아가 계속.
       //   같은 일이 5회 연속이면 그때만 멈춘다(무한 반복 방지).
-      const submitOutcome = await clickSubmitAndConfirm(page, submitBtnSelector);
+      // (v1.0.84) 제출 클릭 전마다(첫 클릭·30초 무반응 재클릭) 실행: 메모가 모두 정확히 들어있는지 확인,
+      //   틀린 칸은 다시 입력 후 재확인. 그래도 틀리거나 빈 칸/메모칸 없음이 있으면 제출 버튼을 누르지 않고 멈춘다.
+      const verifyMemos = async () => {
+        const readByInner = async () => {
+          const list = await readMemoTextareas(page);
+          if (!list) return null;
+          const m = new Map();
+          list.forEach(t => { if (t.inner >= 0 && !m.has(t.inner)) m.set(t.inner, t.value); });
+          return { list, byInner: m };
+        };
+        let cur = await readByInner();
+        if (!cur) return { ok: false, message: '제출 전 메모칸을 읽지 못함' };
+        let refilled = 0;
+        for (const [orderIdx, memoText] of textareaMap) {
+          if (cur.byInner.get(orderIdx) === memoText) continue;
+          const ta = orderInners.nth(orderIdx).locator(MEMO_TEXTAREA_SEL).first();
+          if (await ta.count() === 0) return { ok: false, message: `제출 전 확인: 주문 ${orderIdx + 1} 메모칸이 없음` };
+          await ta.fill(memoText, { timeout: 10000 }).catch(() => {});
+          refilled++;
+        }
+        if (refilled) cur = await readByInner();
+        if (!cur) return { ok: false, message: '제출 전 메모칸을 읽지 못함' };
+        const wrong = [...textareaMap].filter(([i, t]) => cur.byInner.get(i) !== t).map(([i]) => i + 1);
+        if (wrong.length) return { ok: false, message: `제출 전 확인: 주문 ${wrong.join(', ')} 메모가 입력되지 않음` };
+        const empty = cur.list.filter(t => !String(t.value || '').trim()).length;
+        if (empty) return { ok: false, message: `제출 전 확인: 빈 메모칸 ${empty}개` };
+        return { ok: true, summary: `${textareaMap.size}건 모두 입력됨${refilled ? ` (${refilled}건 다시 입력)` : ''}` };
+      };
+      const submitOutcome = await clickSubmitAndConfirm(page, verifyMemos);
+      if (submitOutcome.status === 'memo_failed') {
+        exitReason = submitOutcome.clicks === 0
+          ? `${submitOutcome.message} — 제출 버튼을 누르지 않고 멈춤`
+          : `${submitOutcome.message} — 제출 버튼을 다시 누르지 않고 멈춤 (먼저 누른 ${submitOutcome.clicks}회가 반영됐는지 1688 주문 목록 확인 필요)`;
+        console.log(`  X ${exitReason}`);
+        break;
+      }
       if (submitOutcome.status !== 'success') {
         unconfirmedStreak++;
         unconfirmedBatches.push({ iteration: iterationCount, count: currentBatchIndexes.length, status: submitOutcome.status, url: submitOutcome.url, message: submitOutcome.message || '' });
@@ -3291,7 +3324,7 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
         continue;
       }
       unconfirmedStreak = 0;
-      console.log(`  + Submission success page detected: ${submitOutcome.url}`);
+      console.log(`  + Submission success page detected: ${submitOutcome.url} (clicks=${submitOutcome.clicks})`);
 
       // 제출 확인 완료 → 이번 배치를 success 리스트에 병합
       currentBatchIndexes.forEach(idx => successOrderIndexes.push(idx));
@@ -3436,49 +3469,101 @@ async function clickSettleAndWaitConfirm(page, settleSel, maxAttempts = 3) {
   return { ok: false, attempts: maxAttempts, message };
 }
 
-// 提交订单 클릭 → 성공 페이지 대기 (최대 40초). (v1.0.81) 예전 방식 복귀 — 클릭 반영 신호로 중단하지 않는다.
-//   반환 status: 'success' | 'unconfirmed'   (signal: 참고용 — loading/gone/url 변화 여부)
-//   제출 버튼은 이중 주문 위험 때문에 자동 재클릭하지 않는다.
-async function clickSubmitAndConfirm(page, submitSel) {
+// ========================================
+// 제출 버튼(立即下单) 찾기 (v1.0.84)
+//  주문확인 페이지에는 같은 立即下单 버튼이 2개 있다 — 본문 아래(commit-card)와 오른쪽 가격 패널(page-aside).
+//  화면 배치(창 너비)에 따라 하나만 보이고 다른 하나는 크기 0 으로 숨겨진다. (2026-10-27 실측: 첫 번째가 숨김)
+//  예전 waitForSelector 는 '첫 번째' 일치 요소만 보이는지 확인해서, 첫 번째가 숨겨진 배치에서는 30초 내내 실패했다.
+//  → 보이는(:visible) + 활성(disabled=false, loading=false) 버튼만 찾는다.
+//    data-tracker="btn-submit-order" 버튼이 페이지에 있으면 그것만, 없으면(1688 이 속성을 바꾼 경우) 기존 선택자로.
+// ========================================
+const SUBMIT_BTN_TRACKER = 'q-button[data-tracker="btn-submit-order"]';
+const SUBMIT_BTN_READY = '[type="primary"][disabled="false"][loading="false"]:visible';
+
+async function findSubmitButton(page) {
+  const hasTracker = await page.locator(SUBMIT_BTN_TRACKER).count().catch(() => 0) > 0;
+  const loc = page.locator((hasTracker ? SUBMIT_BTN_TRACKER : 'q-button') + SUBMIT_BTN_READY);
+  return (await loc.count().catch(() => 0)) > 0 ? loc.last() : null;
+}
+
+async function waitSubmitButtonReady(page, timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    checkShouldStop();
+    const btn = await findSubmitButton(page);
+    if (btn) return btn;
+    await page.waitForTimeout(500);
+  }
+  return null;
+}
+
+// 提交订单 클릭 → 성공 페이지 대기. (v1.0.84)
+//   · 클릭 후 30초 동안 성공 페이지로 안 넘어가고, 여전히 주문확인 페이지에 제출 버튼이 '보이고 활성' 상태면
+//     (= 페이지가 클릭을 받지 않고 가만히 있음) verifyMemos() 로 메모가 모두 들어있는지 확인(틀리면 다시 입력)한 뒤 다시 클릭.
+//   · 버튼이 로딩 중/비활성/사라짐 이면 처리 중일 수 있으므로 다시 누르지 않고 기다린다 (이중 주문 방지).
+//   · 첫 클릭 전에도 verifyMemos() — 메모가 하나라도 안 들어갔으면 누르지 않고 'memo_failed' (clicks=0).
+//   · 클릭 최대 3회, 전체 최대 120초.
+//   반환 status: 'success' | 'unconfirmed' | 'memo_failed'   (clicks: 실제 클릭 횟수, signal: 참고용)
+async function clickSubmitAndConfirm(page, verifyMemos) {
   const startUrl = page.url();
-  await page.evaluate((sel) => {
-    window.__submitSignal = { loading: false, gone: false };
-    const btns = [...document.querySelectorAll(sel)];
-    const target = btns[btns.length - 1];
-    if (!target) return;
-    const mark = () => {
-      if (target.getAttribute('loading') === 'true' || target.getAttribute('disabled') === 'true') window.__submitSignal.loading = true;
-      if (!document.contains(target)) window.__submitSignal.gone = true;
-    };
-    const mo = new MutationObserver(mark);
-    mo.observe(target, { attributes: true });
-    mo.observe(document.body, { childList: true, subtree: true });
-    window.__submitMO = mo;
-  }, submitSel).catch(() => {});
+  const MAX_CLICKS = 3, RETRY_AFTER_MS = 30000, TOTAL_MS = 120000;
+  let clicks = 0, lastClickAt = 0, message = '', signal = '';
+  const t0 = Date.now();
 
-  let message = '';
-  await page.locator(submitSel).last().click({ timeout: 30000 })
-    .catch(e => { message = 'click error: ' + String(e.message).split('\n')[0]; console.log(`  ! submit ${message}`); });
-  console.log('  + Submit order button clicked');
-
+  const doClick = async () => {
+    lastClickAt = Date.now();
+    const btn = await findSubmitButton(page);
+    if (!btn) { message = '보이는 제출 버튼을 찾지 못함'; console.log(`  ! submit: ${message}`); return; }
+    await btn.evaluate((target) => {
+      try { window.__submitMO && window.__submitMO.disconnect(); } catch (_) {}
+      window.__submitSignal = { loading: false, gone: false };
+      const mark = () => {
+        if (target.getAttribute('loading') === 'true' || target.getAttribute('disabled') === 'true') window.__submitSignal.loading = true;
+        if (!document.contains(target)) window.__submitSignal.gone = true;
+      };
+      const mo = new MutationObserver(mark);
+      mo.observe(target, { attributes: true });
+      mo.observe(document.body, { childList: true, subtree: true });
+      window.__submitMO = mo;
+    }).catch(() => {});
+    clicks++;
+    await btn.click({ timeout: 10000 })
+      .then(() => console.log(`  + Submit order button clicked (${clicks}/${MAX_CLICKS})`))
+      .catch(e => { message = 'click error: ' + String(e.message).split('\n')[0]; console.log(`  ! submit ${message}`); });
+  };
   const cleanup = () => page.evaluate(() => { try { window.__submitMO && window.__submitMO.disconnect(); } catch (_) {} }).catch(() => {});
-  let signal = '';
-  for (let t = 0; t < 80; t++) {            // 40초
+
+  // 첫 클릭 전에도 메모 확인 — 하나라도 안 들어갔으면 제출 버튼을 누르지 않는다
+  const first = verifyMemos ? await verifyMemos() : { ok: true, summary: '-' };
+  if (!first.ok) return { status: 'memo_failed', url: startUrl, signal: '', clicks: 0, message: first.message };
+  console.log(`  + 제출 전 메모 확인: ${first.summary}`);
+  await doClick();
+  while (Date.now() - t0 < TOTAL_MS) {
     await page.waitForTimeout(500);
     checkShouldStop();
     const url = page.url();
-    if (SUBMIT_SUCCESS_URL_RE.test(url)) { await cleanup(); return { status: 'success', url, signal }; }
+    if (SUBMIT_SUCCESS_URL_RE.test(url)) { await cleanup(); return { status: 'success', url, signal, clicks }; }
     if (!signal) {
       const sig = await page.evaluate(() => window.__submitSignal || null).catch(() => null);
       if (url !== startUrl) signal = 'url';
       else if (sig && sig.loading) signal = 'loading';
       else if (sig && sig.gone) signal = 'gone';
     }
+    if (clicks >= MAX_CLICKS || Date.now() - lastClickAt < RETRY_AFTER_MS) continue;
+    if (!ORDER_CONFIRM_URL_RE.test(url)) continue;              // 다른 페이지로 이동 중 → 기다림
+    if (!(await findSubmitButton(page))) continue;              // 로딩/비활성/사라짐 → 처리 중일 수 있음, 다시 누르지 않음
+    const memo = verifyMemos ? await verifyMemos() : { ok: true, summary: '-' };
+    if (!memo.ok) {
+      await cleanup();
+      return { status: 'memo_failed', url, signal, clicks, message: memo.message };
+    }
+    console.log(`  ! 제출 후 30초간 반응 없음 (주문확인 페이지 그대로, 버튼 활성) → 메모 확인: ${memo.summary} → 제출 버튼 다시 클릭`);
+    await doClick();
   }
   const finalUrl = page.url();
   message = (await readPageNotice(page)) || message;
   await cleanup();
-  return { status: 'unconfirmed', url: finalUrl, signal: signal || 'none', message };
+  return { status: 'unconfirmed', url: finalUrl, signal: signal || 'none', clicks, message };
 }
 
 async function scrollUntilShopCount(page, targetCount, maxMs = 60000) {
@@ -4025,4 +4110,4 @@ async function askInquiry(group) {
   }
 }
 
-module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery, compareOrdersWithCart, checkSizeMatch, checkColorMatch, readMemoTextareas, MEMO_TEXTAREA_SEL };
+module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery, compareOrdersWithCart, checkSizeMatch, checkColorMatch, readMemoTextareas, MEMO_TEXTAREA_SEL, findSubmitButton, clickSubmitAndConfirm };
