@@ -1208,7 +1208,7 @@ async function loadFtCartsDropdown() {
     .select('id, cart_name, created_at')
     .eq('user_id', userId)
     .eq('status', 'ORDER')
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: true });
 
   if (error) {
     console.error('ft_carts 조회 실패:', error);
@@ -1237,7 +1237,7 @@ async function loadFtCartsDropdown() {
   }
 
   sel.innerHTML = '<option value="">선택...</option>';
-  // 생성일자(한국시간) 별 묶음 — data 가 created_at 내림차순이므로 날짜 그룹도 최신 날짜가 위
+  // 생성일자(한국시간) 별 묶음 — (v1.0.86) data 가 created_at 오름차순 → 위에서 아래로 과거 → 최신 (날짜 그룹·그룹 안 카트 모두)
   const groups = new Map();   // 'YYYY-MM-DD' | '' → { label, rows: [{ row, time }] }
   data.forEach(row => {
     const d = row.created_at ? new Date(row.created_at) : null;
