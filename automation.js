@@ -828,6 +828,18 @@ async function resolveQuantityForItem(page, inputField, item) {
 }
 
 // 그룹 주문 처리 (동일 offer_id의 여러 옵션을 한 번에)
+// 품절 옵션 행인지 (v1.0.85)
+//  1688 상품 페이지에서 재고가 없는 사이즈 행은 <div class="expand-view-item soldout"> 이고
+//  수량 입력칸 대신 <div class="item-count-invalid">库存不足</div> 가 있다.
+//  품절 표시가 있고 입력칸이 없을 때만 품절로 본다 (입력칸이 있으면 기존 수량 확인 절차가 처리).
+async function isSoldOutRow(row) {
+  return await row.evaluate(el => {
+    const marked = el.classList.contains('soldout') || !!el.querySelector('.item-count-invalid')
+      || /库存不足/.test(el.textContent || '');
+    return marked && !el.querySelector('.ant-input-number-input');
+  }).catch(() => false);
+}
+
 async function processGroupOrder(page, group, onProgress) {
   const { offerId, url, items } = group;
 
@@ -1038,6 +1050,18 @@ async function processGroupOrder(page, group, onProgress) {
 
       if (!targetRow) {
         throw new Error('Could not select option');
+      }
+
+      // (v1.0.85) 품절 옵션(库存不足): 수량 입력칸이 없다. 예전에는 입력칸을 기다리다 시간 초과 오류로 끝났다.
+      //   → 바로 실패 + 취소 사유 '품절' 자동 선택 (qtyLimited: 세트 짝 연동 확인 대상에 포함)
+      if (await isSoldOutRow(targetRow)) {
+        console.log(`  X Sold out (库存不足): ${item.color}/${item.size}`);
+        item.optionSelected = false;
+        item.error = '품절';
+        item.orderIndices.forEach(idx => {
+          onProgress({ index: idx, status: 'error', errorReason: '품절 (库存不足)', cancelReason: '품절', qtyLimited: true });
+        });
+        continue;
       }
 
       // 수량 입력 + 확정 (2026-10-25: 입력 후 읽어서 확인, 재고/단위/최소주문 제약 시 행 조합)
@@ -4110,4 +4134,4 @@ async function askInquiry(group) {
   }
 }
 
-module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery, compareOrdersWithCart, checkSizeMatch, checkColorMatch, readMemoTextareas, MEMO_TEXTAREA_SEL, findSubmitButton, clickSubmitAndConfirm };
+module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery, compareOrdersWithCart, checkSizeMatch, checkColorMatch, readMemoTextareas, MEMO_TEXTAREA_SEL, findSubmitButton, clickSubmitAndConfirm, isSoldOutRow };
