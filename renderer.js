@@ -1184,6 +1184,35 @@ const CART_DATE_FMT = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul',
 const CART_TIME_FMT = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false });
 const CART_WDAY_FMT = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', weekday: 'short' });
 
+// (v1.0.87) 카트별 품목 수(ft_cart_items 행 수)·총 개수(order_qty 합) 집계.
+//  Supabase 는 한 번에 최대 1000행만 돌려주므로 1000행씩 나눠 끝까지 읽는다 (예전 건수 집계는 1000행에서 잘릴 수 있었음).
+//  반환: Map(cart_id → { items, qty }) / 조회 실패 시 null
+async function fetchCartItemTotals(cartIds) {
+  const totals = new Map();
+  cartIds.forEach(id => totals.set(id, { items: 0, qty: 0 }));
+  const PAGE = 1000, ID_CHUNK = 100;
+  for (let c = 0; c < cartIds.length; c += ID_CHUNK) {
+    const ids = cartIds.slice(c, c + ID_CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabaseClient
+        .from('ft_cart_items')
+        .select('id, cart_id, order_qty')
+        .in('cart_id', ids)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) { console.warn('ft_cart_items 집계 조회 실패:', error); return null; }
+      (data || []).forEach(it => {
+        const t = totals.get(it.cart_id);
+        if (!t) return;
+        t.items += 1;
+        t.qty += parseInt(it.order_qty, 10) || 0;
+      });
+      if (!data || data.length < PAGE) break;
+    }
+  }
+  return totals;
+}
+
 async function loadFtCartsDropdown() {
   const sel = document.getElementById('ftOrderSelectV2');
   if (!sel) return;
@@ -1220,21 +1249,9 @@ async function loadFtCartsDropdown() {
     return;
   }
 
-  // 2) cart_id 별 ft_cart_items 행 수 집계 (한 번에 조회)
-  const cartIds = data.map(r => r.id);
-  const countMap = new Map();
-  try {
-    const { data: items, error: itemsErr } = await supabaseClient
-      .from('ft_cart_items')
-      .select('cart_id')
-      .in('cart_id', cartIds);
-    if (itemsErr) throw itemsErr;
-    (items || []).forEach(it => {
-      countMap.set(it.cart_id, (countMap.get(it.cart_id) || 0) + 1);
-    });
-  } catch (e) {
-    console.warn('ft_cart_items 건수 조회 실패:', e);
-  }
+  // 2) cart_id 별 품목 수·총 개수 집계 (v1.0.87: 개수 추가, 1000행 넘어도 끝까지)
+  const totals = await fetchCartItemTotals(data.map(r => r.id)) || new Map();
+  const totalOf = id => totals.get(id) || { items: 0, qty: 0 };
 
   sel.innerHTML = '<option value="">선택...</option>';
   // 생성일자(한국시간) 별 묶음 — (v1.0.86) data 가 created_at 오름차순 → 위에서 아래로 과거 → 최신 (날짜 그룹·그룹 안 카트 모두)
@@ -1247,15 +1264,16 @@ async function loadFtCartsDropdown() {
     groups.get(key).rows.push({ row, time: valid ? CART_TIME_FMT.format(d) : '' });
   });
   groups.forEach(g => {
-    const totalItems = g.rows.reduce((sum, { row }) => sum + (countMap.get(row.id) ?? 0), 0);
+    const gItems = g.rows.reduce((sum, { row }) => sum + totalOf(row.id).items, 0);
+    const gQty = g.rows.reduce((sum, { row }) => sum + totalOf(row.id).qty, 0);
     const og = document.createElement('optgroup');
-    og.label = `📅 ${g.label} — 카트 ${g.rows.length}개 · ${totalItems}건`;
+    og.label = `📅 ${g.label} — 카트 ${g.rows.length}개 · ${gItems}품목 · ${gQty}개`;
     g.rows.forEach(({ row, time }) => {
-      const itemCount = countMap.get(row.id) ?? 0;
+      const t = totalOf(row.id);
       const opt = document.createElement('option');
       opt.value = row.id;
       opt.dataset.cartName = row.cart_name || '';
-      opt.textContent = `${time ? time + '  ' : ''}${row.cart_name || '(이름 없음)'} (${itemCount}건)`;
+      opt.textContent = `${time ? time + '  ' : ''}${row.cart_name || '(이름 없음)'} (${t.items}품목 · ${t.qty}개)`;
       og.appendChild(opt);
     });
     sel.appendChild(og);
@@ -1479,7 +1497,7 @@ async function loadNewOrderCounts() {
 
   const { data, error } = await supabaseClient
     .from('ft_carts')
-    .select('user_id')
+    .select('id, user_id')
     .eq('status', 'ORDER');
 
   board.innerHTML = '';
@@ -1497,8 +1515,17 @@ async function loadNewOrderCounts() {
     return;
   }
 
+  // (v1.0.87) 유저별 카트 수 + 품목 수 + 총 개수
   const counts = new Map();
   (data || []).forEach(r => counts.set(r.user_id, (counts.get(r.user_id) || 0) + 1));
+  const totals = (data && data.length) ? await fetchCartItemTotals(data.map(r => r.id)) : new Map();
+  const userTotals = new Map();   // user_id → { items, qty }
+  (data || []).forEach(r => {
+    const t = (totals && totals.get(r.id)) || { items: 0, qty: 0 };
+    const u = userTotals.get(r.user_id) || { items: 0, qty: 0 };
+    u.items += t.items; u.qty += t.qty;
+    userTotals.set(r.user_id, u);
+  });
 
   if (counts.size === 0) {
     const none = document.createElement('span');
@@ -1514,12 +1541,13 @@ async function loadNewOrderCounts() {
   }
 
   [...counts.entries()]
-    .map(([uid, cnt]) => ({ name: nameById.get(uid) || uid, cnt }))
+    .map(([uid, cnt]) => ({ name: nameById.get(uid) || uid, cnt, t: userTotals.get(uid) || { items: 0, qty: 0 } }))
     .sort((a, b) => String(a.name).localeCompare(String(b.name)))
     .forEach(e => {
       const chip = document.createElement('span');
       chip.style.cssText = 'display:inline-block; padding:2px 8px; margin:2px; background:#eef2ff; border-radius:10px;';
-      chip.textContent = `${e.name} ${e.cnt}건`;
+      // 집계 조회 실패(totals=null) 시에는 예전처럼 건수만
+      chip.textContent = totals ? `${e.name} ${e.cnt}건 · ${e.t.items}품목 · ${e.t.qty}개` : `${e.name} ${e.cnt}건`;
       board.appendChild(chip);
     });
 }
