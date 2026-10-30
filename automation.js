@@ -3880,7 +3880,10 @@ const MERCHANT_DELIVERY_TEXT = '商家配送';
 
 async function scanMerchantDelivery(page, doClick) {
   return await page.evaluate(({ target, doClick }) => {
+    // (v1.0.90) 시작 요소(official-delivery-service) 자신의 shadowRoot 부터 들어간다.
+    //   v1.0.81~89 는 자식 요소만 보고 자기 shadow DOM 을 건너뛰어 '영역 없음'으로 판정 → 商家配送 를 한 번도 누르지 않았다.
     const deep = (root, out) => {
+      if (root.shadowRoot) deep(root.shadowRoot, out);
       root.querySelectorAll('*').forEach(el => { out.push(el); if (el.shadowRoot) deep(el.shadowRoot, out); });
       return out;
     };
@@ -3928,11 +3931,56 @@ async function scanMerchantDelivery(page, doClick) {
   }, { target: MERCHANT_DELIVERY_TEXT, doClick });
 }
 
+// Playwright 로케이터(open shadow DOM 투과)로 配送方式 라디오 상태 읽기 (v1.0.90)
+const DELIVERY_RADIO_SEL = 'official-delivery-method-pc q-radio';
+async function readMerchantDeliveryByLocator(page) {
+  const list = await page.locator(DELIVERY_RADIO_SEL)
+    .evaluateAll(els => els.map(e => ({ value: e.getAttribute('value'), checked: e.getAttribute('checked') === 'true' })))
+    .catch(() => []);
+  const normal = list.filter(x => x.value === 'normal');
+  return {
+    radios: list.length,
+    found: normal.length,
+    selected: normal.filter(x => x.checked).length,
+    unselected: normal.filter(x => !x.checked).length,
+    officialSelected: list.filter(x => x.value === 'official' && x.checked).length,
+  };
+}
+
+// 미선택 商家配送 라디오를 하나씩 클릭 (클릭은 상위 .pc-content-radio-item 의 선택 처리로 전달된다)
+async function clickMerchantDeliveryByLocator(page) {
+  const loc = page.locator(`${DELIVERY_RADIO_SEL}[value="normal"]`);
+  const n = await loc.count().catch(() => 0);
+  let clicked = 0;
+  for (let i = 0; i < n; i++) {
+    try {
+      if ((await loc.nth(i).getAttribute('checked')) === 'true') continue;
+      await loc.nth(i).click({ timeout: 3000 });
+      clicked++;
+    } catch (_) {}
+  }
+  return clicked;
+}
+
 async function selectMerchantDelivery(page) {
   let r = await scanMerchantDelivery(page, true);
   if (!r.present) {
-    console.log('  [配送方式] 영역 없음 — 건너뜀');
-    return { present: false, found: 0, selected: 0, unselected: 0, officialSelected: 0, ok: true, wrong: false, sample: '' };
+    // (v1.0.90) 교차 확인: 스캔이 못 봐도 로케이터에 라디오가 보이면 건너뛰지 않고 로케이터로 선택·확인한다
+    const pre = await readMerchantDeliveryByLocator(page);
+    if (pre.radios === 0) {
+      console.log('  [配送方式] 영역 없음 — 건너뜀');
+      return { present: false, found: 0, selected: 0, unselected: 0, officialSelected: 0, ok: true, wrong: false, sample: '' };
+    }
+    console.log(`  [配送方式] ! 스캔은 '영역 없음'인데 라디오 ${pre.radios}개가 보임 (商家配送 ${pre.found}개, 미선택 ${pre.unselected}) → 로케이터로 처리`);
+    if (pre.unselected > 0) {
+      await clickMerchantDeliveryByLocator(page);
+      await page.waitForTimeout(800);
+    }
+    const lv = await readMerchantDeliveryByLocator(page);
+    const lok = lv.found > 0 && lv.unselected === 0;
+    const lwrong = lv.unselected > 0 && lv.officialSelected > 0;
+    console.log(`  [配送方式] 결과(로케이터): found=${lv.found}, selected=${lv.selected}, unselected=${lv.unselected}, officialSelected=${lv.officialSelected} → ${lok ? 'OK' : (lwrong ? 'WRONG' : 'UNKNOWN')}`);
+    return { present: true, found: lv.found, selected: lv.selected, unselected: lv.unselected, officialSelected: lv.officialSelected, ok: lok, wrong: lwrong, sample: '' };
   }
   console.log(`  [配送方式] sections=${r.sections}, found=${r.found}, already=${r.selected}, clicked=${r.clicked}`);
   if (r.found === 0) {
@@ -3946,15 +3994,7 @@ async function selectMerchantDelivery(page) {
   if (v.unselected > 0) {
     // 폴백: Playwright 로케이터는 open shadow DOM 을 투과한다 → q-radio[value="normal"] 를 하나씩 클릭
     console.log(`  [配送方式] ${v.unselected}개 미선택 → Playwright 클릭 폴백`);
-    const loc = page.locator('official-delivery-method-pc q-radio[value="normal"]');
-    const n = await loc.count().catch(() => 0);
-    for (let i = 0; i < n; i++) {
-      try {
-        const checked = await loc.nth(i).getAttribute('checked');
-        if (checked === 'true') continue;
-        await loc.nth(i).click({ timeout: 3000 });
-      } catch (_) {}
-    }
+    await clickMerchantDeliveryByLocator(page);
     await page.waitForTimeout(800);
     v = await scanMerchantDelivery(page, false);
   }
