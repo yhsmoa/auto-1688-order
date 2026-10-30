@@ -3,7 +3,7 @@
 // 2026-10-28 실제 1688 상품 페이지 구조(사이즈 6개 중 130/140cm 품절)를 그대로 줄여 옮김.
 const fs = require('fs');
 const { chromium } = require('playwright');
-const { isSoldOutRow } = require('../automation');
+const { isSoldOutRow, findSizeMatchWithSoldOut } = require('../automation');
 
 const CHROME = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -39,6 +39,46 @@ const ok = (cond, name) => { if (cond) { pass++; console.log('  ok  ', name); } 
     ok(result['140cm'] === true, '140cm (库存不足) → 품절');
     ok(result['170cm'] === false, 'soldout 표시가 있어도 입력칸이 있으면 품절로 단정하지 않음 (기존 수량 확인으로 처리)');
     ok(Object.keys(result).length === 7, `품절 행도 라벨이 읽혀 옵션 매칭 대상에 포함됨 (${Object.keys(result).length}개)`);
+
+    // ── 품절 사이즈가 숨겨진 경우: '展开已售罄商品' 을 눌러야 보인다 (2026-10-30 실제 페이지 구조) ──
+    const HIDDEN = `<div class="expand-view-list-wrapper"><div class="expand-view-list" id="list">${normalRow('90cm', 924)}${normalRow('110cm', 862)}${normalRow('140cm', 865)}</div>
+      <span class="show-soldout-info"><a class="v-flex" id="toggle"><od-text i18n="showSelloutItems">展开已售罄商品</od-text><span class="v-arrow-down"></span></a></span></div>
+      <script>
+        window.__expandClicks = 0;
+        document.getElementById('toggle').addEventListener('click', () => {
+          window.__expandClicks++;
+          const t = document.querySelector('#toggle od-text');
+          if (t.textContent.includes('展开')) {
+            setTimeout(() => {   // 실제처럼 약간 늦게 펼쳐짐
+              document.getElementById('list').insertAdjacentHTML('beforeend', ${JSON.stringify(soldRow('100cm') + soldRow('120cm') + soldRow('130cm'))});
+              t.textContent = '收起已售罄商品';
+            }, 400);
+          }
+        });
+      </script>`;
+    const visibleList = async () => {
+      const out = [];
+      for (const row of await page.locator('.expand-view-item').all()) out.push({ text: (await row.locator('.item-label').innerText()).trim(), row });
+      return out;
+    };
+
+    await page.setContent(HIDDEN);
+    let m = await findSizeMatchWithSoldOut(page, '110cm', await visibleList());
+    ok(m.match && m.match.text === '110cm', '보이는 사이즈(110cm)는 바로 찾음');
+    ok((await page.evaluate(() => window.__expandClicks)) === 0, '바로 찾으면 펼치기를 누르지 않음');
+
+    m = await findSizeMatchWithSoldOut(page, '130cm', await visibleList());
+    ok(m.match && m.match.text === '130cm', `숨겨진 130cm → 펼친 뒤 찾음 (${m.type})`);
+    ok((await page.evaluate(() => window.__expandClicks)) === 1, '展开已售罄商品 1회 클릭');
+    ok(m.match && await isSoldOutRow(m.match.row), '찾은 130cm 는 품절(库存不足) → 사유 품절 처리 대상');
+
+    m = await findSizeMatchWithSoldOut(page, '160cm', await visibleList());
+    ok(!m.match && m.type !== 'multiple', '펼쳐도 없는 160cm → 기존처럼 Size not found');
+    ok((await page.evaluate(() => window.__expandClicks)) === 1, '이미 펼쳐진(收起) 상태면 다시 누르지 않음');
+
+    await page.setContent(`<div class="expand-view-list">${normalRow('90cm', 1)}</div>`);
+    m = await findSizeMatchWithSoldOut(page, '130cm', await visibleList());
+    ok(!m.match, '펼치기 링크가 없는 페이지 → 그대로 not found');
   } finally {
     await browser.close();
   }

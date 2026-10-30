@@ -840,6 +840,42 @@ async function isSoldOutRow(row) {
   }).catch(() => false);
 }
 
+// '展开已售罄商品'(품절 상품 펼치기) 클릭 (v1.0.88)
+//  1688 상품 페이지는 품절 사이즈를 기본으로 숨기고 목록 아래에 <span class="show-soldout-info"><a>展开已售罄商品</a></span> 만 둔다.
+//  → 옵션을 못 찾았을 때만 펼쳐서 다시 찾는다. '展开'(펼치기) 문구일 때만 누른다 (이미 펼쳐져 '收起' 면 누르지 않음).
+//  반환: 눌렀으면 true
+async function expandSoldOutItems(page) {
+  const box = page.locator('.show-soldout-info').filter({ hasText: '展开' }).first();
+  if ((await box.count().catch(() => 0)) === 0) return false;
+  if (!(await box.isVisible().catch(() => false))) return false;
+  const link = box.locator('a').first();
+  const target = (await link.count().catch(() => 0)) > 0 ? link : box;
+  const before = await page.locator('.expand-view-item').count().catch(() => 0);
+  await target.scrollIntoViewIfNeeded().catch(() => {});
+  await safeClick(target);
+  console.log('  + 展开已售罄商品 clicked');
+  for (let t = 0; t < 10; t++) {                 // 펼쳐질 때까지 최대 3초
+    await page.waitForTimeout(300);
+    if ((await page.locator('.expand-view-item').count().catch(() => 0)) > before) break;
+  }
+  return true;
+}
+
+// 사이즈(옵션) 매칭 — 못 찾으면 '展开已售罄商品' 을 펼친 뒤 한 번 더 (v1.0.88)
+//  펼친 뒤 찾은 행이 품절(库存不足)이면 호출측의 isSoldOutRow 검사가 사유 '품절' 로 처리한다.
+async function findSizeMatchWithSoldOut(page, wanted, availableSizes) {
+  const first = findSizeMatch(wanted, availableSizes);
+  if (first.match || first.type === 'multiple') return first;
+  if (!(await expandSoldOutItems(page))) return first;
+  const expanded = [];
+  for (const row of await page.locator('.expand-view-item').all()) {
+    const labelText = await row.locator('.item-label').innerText().catch(() => '');
+    if (labelText) expanded.push({ text: labelText.trim(), row });
+  }
+  console.log(`  Available sizes (展开 후): ${expanded.map(x => x.text).join(', ')}`);
+  return findSizeMatch(wanted, expanded);
+}
+
 async function processGroupOrder(page, group, onProgress) {
   const { offerId, url, items } = group;
 
@@ -917,7 +953,11 @@ async function processGroupOrder(page, group, onProgress) {
   // 3. 옵션 구조 파악
   const colorButtons = await page.locator('button.sku-filter-button').all();
   const hasColorOptions = colorButtons.length > 0;
-  const sizeRows = await page.locator('.expand-view-item').all();
+  let sizeRows = await page.locator('.expand-view-item').all();
+  // (v1.0.88) 색상 버튼도 없고 보이는 사이즈도 없는데 '展开已售罄商品' 만 있으면(전부 품절) 펼쳐서 다시 센다
+  if (sizeRows.length === 0 && colorButtons.length === 0 && await expandSoldOutItems(page)) {
+    sizeRows = await page.locator('.expand-view-item').all();
+  }
   const hasSizeOptions = sizeRows.length > 0;
 
   console.log(`Option structure: Colors=${colorButtons.length}, Sizes=${sizeRows.length}`);
@@ -968,7 +1008,7 @@ async function processGroupOrder(page, group, onProgress) {
 
         console.log(`  Available sizes: ${availableSizes.map(s => s.text).join(', ')}`);
 
-        const matchResult = findSizeMatch(item.size, availableSizes);
+        const matchResult = await findSizeMatchWithSoldOut(page, item.size, availableSizes);
         if (matchResult.match) {
           targetRow = matchResult.match.row;
           console.log(`  + Size matched (${matchResult.type}): ${matchResult.match.text}`);
@@ -990,7 +1030,7 @@ async function processGroupOrder(page, group, onProgress) {
           }
         }
 
-        const matchResult = findSizeMatch(item.color, availableSizes);
+        const matchResult = await findSizeMatchWithSoldOut(page, item.color, availableSizes);
         if (matchResult.match) {
           targetRow = matchResult.match.row;
           console.log(`  + Option matched (${matchResult.type}): ${matchResult.match.text}`);
@@ -1025,7 +1065,10 @@ async function processGroupOrder(page, group, onProgress) {
         }
         await page.waitForTimeout(500);
 
-        const newSizeRows = await page.locator('.expand-view-item').all();
+        let newSizeRows = await page.locator('.expand-view-item').all();
+        if (newSizeRows.length === 0 && await expandSoldOutItems(page)) {
+          newSizeRows = await page.locator('.expand-view-item').all();
+        }
         if (newSizeRows.length > 0) {
           const availableSizes = [];
           for (const row of newSizeRows) {
@@ -1035,7 +1078,7 @@ async function processGroupOrder(page, group, onProgress) {
             }
           }
 
-          const matchResult = findSizeMatch(item.size, availableSizes);
+          const matchResult = await findSizeMatchWithSoldOut(page, item.size, availableSizes);
           if (matchResult.match) {
             targetRow = matchResult.match.row;
           } else if (matchResult.type === 'multiple') {
@@ -4134,4 +4177,4 @@ async function askInquiry(group) {
   }
 }
 
-module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery, compareOrdersWithCart, checkSizeMatch, checkColorMatch, readMemoTextareas, MEMO_TEXTAREA_SEL, findSubmitButton, clickSubmitAndConfirm, isSoldOutRow };
+module.exports = { processOrders, startReview, stopProcessing, inputRefCodes, inputRefCodesV2, openLoginBrowser, askInquiry, enumerateQtyCombos, describeQtyConstraints, selectMerchantDelivery, compareOrdersWithCart, checkSizeMatch, checkColorMatch, readMemoTextareas, MEMO_TEXTAREA_SEL, findSubmitButton, clickSubmitAndConfirm, isSoldOutRow, expandSoldOutItems, findSizeMatchWithSoldOut };
