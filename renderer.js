@@ -2050,10 +2050,19 @@ function renderOrderList() {
   html += '</tbody></table>';
 
   // 매칭되지 않은 엑셀 데이터 표시
+  //  (v1.0.89) 같은 1688 주문번호 + Offer ID 줄은 한 줄로 묶고 '× N건' 으로 표시 (데이터 자체는 그대로)
   if (unmatchedExcelData && unmatchedExcelData.length > 0) {
+    const unmatchedGroups = new Map();   // 'orderNumber|offerId' → { orderNumber, offerId, count }
+    unmatchedExcelData.forEach(item => {
+      const key = `${item.orderNumber}|${item.offerId}`;
+      const g = unmatchedGroups.get(key) || { orderNumber: item.orderNumber, offerId: item.offerId, count: 0 };
+      g.count++;
+      unmatchedGroups.set(key, g);
+    });
+    const unmatchedOrderCount = new Set(unmatchedExcelData.map(item => item.orderNumber)).size;
     html += `
       <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 15px; margin-top: 15px;">
-        <h4 style="margin: 0 0 10px 0; color: #856404;">⚠️ 매칭되지 않은 엑셀 데이터 (${unmatchedExcelData.length}건)</h4>
+        <h4 style="margin: 0 0 10px 0; color: #856404;">⚠️ 매칭되지 않은 엑셀 데이터 (${unmatchedExcelData.length}건 · 주문번호 ${unmatchedOrderCount}개)</h4>
         <div style="max-height: 200px; overflow-y: auto;">
           <table style="width: 100%; font-size: 12px;">
             <thead>
@@ -2063,10 +2072,10 @@ function renderOrderList() {
               </tr>
             </thead>
             <tbody>
-              ${unmatchedExcelData.map(item => `
+              ${[...unmatchedGroups.values()].map(g => `
                 <tr>
-                  <td style="padding: 5px;">${item.orderNumber}</td>
-                  <td style="padding: 5px;">${item.offerId}</td>
+                  <td style="padding: 5px;">${g.orderNumber}${g.count > 1 ? ` <span style="color:#856404; font-weight:bold;">× ${g.count}건</span>` : ''}</td>
+                  <td style="padding: 5px;">${g.offerId}</td>
                 </tr>
               `).join('')}
             </tbody>
