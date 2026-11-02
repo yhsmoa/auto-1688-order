@@ -1170,6 +1170,8 @@ function reconstructOrderFromCartItem(it, ctx) {
       // ── V2 주문 탭 전용 내부 마커 (saveToSupabaseV2 가 참고) ──
       _computed_item_seq: itemSeq,        // → ft_order_items.item_seq (누적값)
       _cartId: cartId,                    // → V2 저장 성공 후 ft_carts.status='DONE'
+      // (v1.0.91) 입고 후 경로 — STOCK: 창고 재고(보관) / SHIPMENT: 바로 쉽먼트. 그 외 값은 SHIPMENT
+      arrival_route: it.arrival_route === 'STOCK' ? 'STOCK' : 'SHIPMENT',
     },
     originalData: []
   };
@@ -5202,12 +5204,16 @@ async function saveToSupabaseV2() {
 
     // product_no별 UUID 생성 (같은 product_no → 같은 product_id)
     const productIdMap = new Map();
+    // (v1.0.91) 입고 후 경로는 상품(product_no) 단위 — 세트 구성품 중 하나라도 보관이면 세트 전체 보관
+    //   (창고 재고 원장이 product_id 단위라 구성품마다 다르면 안 된다)
+    const stockProductNos = new Set();
     successOrders.forEach(order => {
       const db = order.dbData || {};
       const productNo = (db.order_number || '').split('-').slice(0, 3).join('-') || null;
       if (productNo && !productIdMap.has(productNo)) {
         productIdMap.set(productNo, crypto.randomUUID());
       }
+      if (productNo && db.arrival_route === 'STOCK') stockProductNos.add(productNo);
     });
 
     const itemsToInsert = successOrders.map((order, index) => {
@@ -5265,6 +5271,8 @@ async function saveToSupabaseV2() {
           return null;
         })(),
         user_id: ftUserId,
+        // 장바구니에서 온 행만 값이 있다 (엑셀 [주문 탭] 은 항상 SHIPMENT)
+        arrival_route: productNo && stockProductNos.has(productNo) ? 'STOCK' : 'SHIPMENT',
         status: 'PROCESSING'
       };
     });
