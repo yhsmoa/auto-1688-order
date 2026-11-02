@@ -3279,16 +3279,11 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
         break;
       }
 
-      // ── Section 6: 주소 선택 ──
-      console.log('\nSection 6: Address selection...');
-      checkShouldStop();
-      await selectAddress(page, userCode);
-
-      // ── Section 6.2: 配送方式 → 商家配送 일괄 선택 (2026-10-26) ──
-      //   주소 확정 뒤에 해야 한다 (주소가 바뀌면 배송 방식이 다시 그려질 수 있음).
+      // ── Section 5.8: 配送方式 → 商家配送 일괄 선택 (2026-10-26, 2026-11-02 주소 선택 앞으로 이동) ──
+      //   주소가 바뀌면 배송 방식이 다시 그려질 수 있으나, 제출 직전 재확인(Section 6.5)에서 다시 선택한다.
       //   선택지를 찾았는데 선택이 안 되면 제출하지 않고 중단. 영역이 없으면 그대로 진행.
       //   선택지 자체를 못 찾으면(구조 미확인) 경고만 남기고 진행 — 현재 동작과 동일.
-      console.log('\nSection 6.2: Delivery method → 商家配送...');
+      console.log('\nSection 5.8: Delivery method → 商家配送...');
       checkShouldStop();
       await page.waitForTimeout(500);
       deliveryMethodInfo = await selectMerchantDelivery(page);
@@ -3303,6 +3298,11 @@ async function inputRefCodesV2(groupedData, userCode, opts = {}) {
         deliveryWarnings.push({ iteration: iterationCount, stage: 'select', ...deliveryMethodInfo, sample: undefined });
         console.log(`  ! [配送方式] 선택 상태를 확인하지 못함 (found=${deliveryMethodInfo.found}, unselected=${deliveryMethodInfo.unselected}) — 경고 기록 후 진행`);
       }
+
+      // ── Section 6: 주소 선택 ──
+      console.log('\nSection 6: Address selection...');
+      checkShouldStop();
+      await selectAddress(page, userCode);
 
       // ── Section 6.5: 주문 제출 버튼 클릭 ──
       // 주소 확정(确定) 후 로딩 완료 대기 → enabled + visible 된 후 클릭
