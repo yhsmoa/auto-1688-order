@@ -1106,6 +1106,8 @@ function mapCartSeqToItemSeq(cartItems, base) {
 // shipment 역매핑: ft_cart_items 의 shipment_type/coupang_shipment_size/personal_order_no
 // → 시트 V열 원본 형태로 복원 (ft_order_items 와 동일 패턴 — cart 도 같은 컬럼 구조)
 function vReverseFromShipment(it) {
+  // (v1.0.92) S(보관) 행 — 타입이 없으므로 V열에는 'STOCK' (미리보기 표시용. 저장은 _stock_* 로 사이즈·번호 보존)
+  if (it.arrival_route === 'STOCK')    return 'STOCK';
   if (it.shipment_type === 'PERSONAL') return `P-${it.personal_order_no || ''}`;
   if (it.shipment_type === 'DIRECT')   return 'DIRECT';
   return it.coupang_shipment_size || ''; // COUPANG 또는 미설정
@@ -1172,6 +1174,10 @@ function reconstructOrderFromCartItem(it, ctx) {
       _cartId: cartId,                    // → V2 저장 성공 후 ft_carts.status='DONE'
       // (v1.0.91) 입고 후 경로 — STOCK: 창고 재고(보관) / SHIPMENT: 바로 쉽먼트. 그 외 값은 SHIPMENT
       arrival_route: it.arrival_route === 'STOCK' ? 'STOCK' : 'SHIPMENT',
+      // (v1.0.92) S(보관) 행은 쉽먼트 타입이 없고(V열 왕복 불가) 쿠팡사이즈·개인 주문번호만 보존한다
+      //   → 창고가 재고에서 꺼낼 때 타입을 정하고, 보존된 사이즈로 바로 A/B/C 가 된다
+      _stock_size: it.coupang_shipment_size || null,
+      _stock_personal_no: it.personal_order_no || null,
     },
     originalData: []
   };
@@ -5252,9 +5258,18 @@ async function saveToSupabaseV2() {
         set_total: db.set_total || null,
         set_seq: db.set_seq || null,
         // ── 배송 타입 분기 결과 ──
-        shipment_type: shipment.shipment_type,
-        coupang_shipment_size: shipment.coupang_shipment_size,
-        personal_order_no: shipment.personal_order_no,
+        // (v1.0.92) S(보관) 상품: 타입은 NULL, 사이즈·개인 주문번호는 장바구니 값 보존
+        ...(productNo && stockProductNos.has(productNo)
+          ? {
+              shipment_type: null,
+              coupang_shipment_size: db._stock_size ? String(db._stock_size).toUpperCase() : null,
+              personal_order_no: db._stock_personal_no || null,
+            }
+          : {
+              shipment_type: shipment.shipment_type,
+              coupang_shipment_size: shipment.coupang_shipment_size,
+              personal_order_no: shipment.personal_order_no,
+            }),
         item_no: db.order_number || null,
         product_no: productNo,
         product_id: productIdMap.get(productNo) || null,
