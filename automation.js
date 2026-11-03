@@ -177,6 +177,14 @@ function extractNumber(str) {
   return match ? match[1] : null;
 }
 
+// 색상 버튼 글자 정리 (2026-11-03)
+//   같은 색상의 다른 사이즈에 수량을 넣으면 1688 이 버튼에 수량 배지를 붙여 innerText 가 '粉色\n1' 이 된다.
+//   그대로 비교하면 정확 일치('粉色')가 사라지고 '粉色' 로 시작하는 '粉色加绒' 까지 후보가 되어 'Color ambiguous' 로 실패했다.
+//   → 줄바꿈 뒤 숫자(배지)를 떼고 비교한다.
+function colorButtonText(raw) {
+  return String(raw || '').trim().replace(/\s*\n\s*\d+\+?$/, '').trim();
+}
+
 // 사이즈 매칭 함수
 function findSizeMatch(searchSize, availableSizes) {
   // 1. 정확히 일치
@@ -393,7 +401,7 @@ async function processOneOrder(page, order) {
     for (const btn of colorButtons) {
       const btnText = await btn.innerText().catch(() => '');
       if (btnText) {
-        availableColors.push({ text: btnText.trim(), button: btn });
+        availableColors.push({ text: colorButtonText(btnText), button: btn });
       }
     }
     console.log(`  Available colors: ${availableColors.map(c => c.text).join(', ')}`);
@@ -479,7 +487,7 @@ async function processOneOrder(page, order) {
     for (const btn of colorButtons) {
       const btnText = await btn.innerText().catch(() => '');
       if (btnText) {
-        availableColors.push({ text: btnText.trim(), button: btn });
+        availableColors.push({ text: colorButtonText(btnText), button: btn });
       }
     }
     console.log(`  Available colors: ${availableColors.map(c => c.text).join(', ')}`);
@@ -978,7 +986,7 @@ async function processGroupOrder(page, group, onProgress) {
         for (const btn of colorButtons) {
           const btnText = await btn.innerText().catch(() => '');
           if (btnText) {
-            availableColors.push({ text: btnText.trim(), button: btn });
+            availableColors.push({ text: colorButtonText(btnText), button: btn });
           }
         }
         console.log(`  Available colors: ${availableColors.map(c => c.text).join(', ')}`);
@@ -1049,7 +1057,7 @@ async function processGroupOrder(page, group, onProgress) {
         for (const btn of colorButtons) {
           const btnText = await btn.innerText().catch(() => '');
           if (btnText) {
-            availableColors.push({ text: btnText.trim(), button: btn });
+            availableColors.push({ text: colorButtonText(btnText), button: btn });
           }
         }
 
@@ -2146,9 +2154,13 @@ async function extractCartDataRaw(page) {
       let size = '';
 
       if (titleTextEl) {
-        const optionText = (titleTextEl.textContent || '').replace(/\s+/g, ' ').trim();   // (v1.0.80) 연속 공백 1칸으로
+        // (v1.0.80) 연속 공백 1칸으로
+        // (v1.0.94) 맞춤 서비스(包装定制 등)를 고른 상품은 옵션 칸에 '已选定制服务' 가 붙는다. 두 번째 옵션(사이즈)이 없는 상품이면
+        //   이 문구가 사이즈 자리에 들어가 주문 사이즈(FREE 등)와 비교되며 '카트에 없음'이 됐다 → 옵션 값이 아니므로 뺀다.
+        const optionText = (titleTextEl.textContent || '').replace(/\s+/g, ' ')
+          .replace(/已选[^;；]*?定制服务/g, '').replace(/[;；]\s*$/, '').trim();
         if (optionText.includes(';')) {
-          const parts = optionText.split(';').map(s => s.trim());
+          const parts = optionText.split(';').map(s => s.trim()).filter(s => s && !s.includes('定制服务'));
           color = parts[0] || '';
           size = parts[1] || '';
         } else if (optionText) {

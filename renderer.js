@@ -1185,8 +1185,10 @@ function reconstructOrderFromCartItem(it, ctx) {
 
 // ─── 드롭박스 채우기 ───────────────────────────────────────────
 // 【V2 주문 탭 전용】 선택된 사용자의 ft_carts.status='ORDER' 행들을 드롭박스에 노출.
-//  옵션 value = ft_carts.id, 라벨 = 생성시각 + cart_name + 아이템 건수.
-//  (v1.0.82) 생성일자(created_at, 한국시간) 별로 <optgroup> 묶음 — 같은 이름의 카트도 날짜로 구분된다.
+//  옵션 value = ft_carts.id, 라벨 = 주문시각 + cart_name + 아이템 건수.
+//  (v1.0.82) 날짜(한국시간) 별로 <optgroup> 묶음 — 같은 이름의 카트도 날짜로 구분된다.
+//  (v1.0.94) 기준 날짜 = 웹 [주문] 시각(ordered_at, DB 트리거가 기록). 예전 created_at(카트 생성) 기준은
+//    며칠 뒤 [주문]된 카트가 지난 날짜로 나타났다. ordered_at 이 없으면 created_at 으로 대신하고 '(생성)' 표시.
 //  옵션 value/dataset 은 그대로라 [추가]/[삭제]/[반려] 동작은 변하지 않는다.
 const CART_DATE_FMT = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' });
 const CART_TIME_FMT = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false });
@@ -1242,7 +1244,7 @@ async function loadFtCartsDropdown() {
   // 1) ft_carts 조회 (user_id + status='ORDER')
   const { data, error } = await supabaseClient
     .from('ft_carts')
-    .select('id, cart_name, created_at')
+    .select('id, cart_name, created_at, ordered_at')
     .eq('user_id', userId)
     .eq('status', 'ORDER')
     .order('created_at', { ascending: true });
@@ -1262,26 +1264,32 @@ async function loadFtCartsDropdown() {
   const totalOf = id => totals.get(id) || { items: 0, qty: 0 };
 
   sel.innerHTML = '<option value="">선택...</option>';
-  // 생성일자(한국시간) 별 묶음 — (v1.0.86) data 가 created_at 오름차순 → 위에서 아래로 과거 → 최신 (날짜 그룹·그룹 안 카트 모두)
-  const groups = new Map();   // 'YYYY-MM-DD' | '' → { label, rows: [{ row, time }] }
-  data.forEach(row => {
-    const d = row.created_at ? new Date(row.created_at) : null;
-    const valid = d && !isNaN(d.getTime());
-    const key = valid ? CART_DATE_FMT.format(d) : '';
-    if (!groups.has(key)) groups.set(key, { label: valid ? `${key} (${CART_WDAY_FMT.format(d)})` : '날짜 없음', rows: [] });
-    groups.get(key).rows.push({ row, time: valid ? CART_TIME_FMT.format(d) : '' });
+  // 주문일자(한국시간) 별 묶음 — (v1.0.86) 위에서 아래로 과거 → 최신 (날짜 그룹·그룹 안 카트 모두)
+  const toDate = v => { const d = v ? new Date(v) : null; return d && !isNaN(d.getTime()) ? d : null; };
+  const rows = data.map(row => {
+    const ordered = toDate(row.ordered_at), created = toDate(row.created_at);
+    return { row, d: ordered || created, fallback: !ordered && !!created, created };
+  }).sort((a, b) => (a.d ? a.d.getTime() : 0) - (b.d ? b.d.getTime() : 0));
+  const groups = new Map();   // 'YYYY-MM-DD' | '' → { label, rows: [{ row, time, note }] }
+  rows.forEach(({ row, d, fallback, created }) => {
+    const key = d ? CART_DATE_FMT.format(d) : '';
+    if (!groups.has(key)) groups.set(key, { label: d ? `${key} (${CART_WDAY_FMT.format(d)})` : '날짜 없음', rows: [] });
+    // 카트를 만든 날이 주문일과 다르면 '생성 MM-DD' 를 덧붙인다 (지난 카트가 늦게 [주문]된 경우)
+    const cKey = created ? CART_DATE_FMT.format(created) : '';
+    const note = fallback ? '(생성)' : (cKey && cKey !== key ? `생성 ${cKey.slice(5)}` : '');
+    groups.get(key).rows.push({ row, time: d ? CART_TIME_FMT.format(d) : '', note });
   });
   groups.forEach(g => {
     const gItems = g.rows.reduce((sum, { row }) => sum + totalOf(row.id).items, 0);
     const gQty = g.rows.reduce((sum, { row }) => sum + totalOf(row.id).qty, 0);
     const og = document.createElement('optgroup');
     og.label = `📅 ${g.label} — 카트 ${g.rows.length}개 · ${gItems}품목 · ${gQty}개`;
-    g.rows.forEach(({ row, time }) => {
+    g.rows.forEach(({ row, time, note }) => {
       const t = totalOf(row.id);
       const opt = document.createElement('option');
       opt.value = row.id;
       opt.dataset.cartName = row.cart_name || '';
-      opt.textContent = `${time ? time + '  ' : ''}${row.cart_name || '(이름 없음)'} (${t.items}품목 · ${t.qty}개)`;
+      opt.textContent = `${time ? time + '  ' : ''}${row.cart_name || '(이름 없음)'} (${t.items}품목 · ${t.qty}개)${note ? '  · ' + note : ''}`;
       og.appendChild(opt);
     });
     sel.appendChild(og);
@@ -4515,7 +4523,14 @@ async function inputRefCodesV2(opts = {}) {
       alert(`V2 참조코드 입력이 중단되었습니다.\n처리 완료: ${result.successOrderIndexes.length}건 (${result.iterationCount}회 반복)`);
     } else if (result.stoppedByEmptyTextarea) {
       showEmptyTextareaWarning(result.emptyTextareaCount, result.totalTextareas, result.emptySellerNames);
-      alert(`빈 입력폼 발견으로 제출하지 않고 중단되었습니다.\n빈 항목을 확인해주세요.`);
+      // (v1.0.94) 어느 판매자인지 + 흔한 원인(성공 목록에서 빠진 상품이 1688 장바구니에 남음)을 함께 안내
+      const names = (result.emptySellerNames || []).filter(Boolean);
+      alert(
+        `빈 입력폼 발견으로 제출하지 않고 중단되었습니다.\n` +
+        (names.length ? `\n메모칸이 빈 판매자 ${names.length}곳:\n${names.map(n => '  · ' + n).join('\n')}\n` : '') +
+        `\n참조코드는 '성공' 행에만 입력됩니다. 위 판매자 상품이 검수 실패 등으로 성공이 아니면 메모칸이 비게 됩니다.\n` +
+        `→ 주문 목록에서 해당 상품 상태를 확인해 성공으로 바꾸거나, 1688 장바구니에서 빼고 다시 실행하세요.`
+      );
     } else if (result.stoppedByDeliveryMethod) {
       const info = result.deliveryMethodInfo || {};
       alert(
